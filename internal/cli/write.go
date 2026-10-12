@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jinto/gslack/internal/core"
 	"github.com/slack-go/slack"
@@ -17,28 +19,32 @@ import (
 )
 
 func (a *app) sendCmd() *cobra.Command {
-	var thread string
+	var thread, at string
 	cmd := &cobra.Command{
 		Use:   "send <#채널|@사용자|ID|permalink> [본문 | -]",
 		Short: "메시지 보내기. permalink를 주면 그 스레드에 답글",
 		Long: `본문은 인자 하나, 또는 생략/-이면 stdin. mrkdwn 그대로 보낸다(<@U…> 멘션 가능).
 @이름은 정확히 일치하는 사람에게만 보낸다(부분 일치는 거절).
 DM 기록이 없는 사용자면 DM을 연다(conversations.open).
-네트워크 오류·타임아웃이면 전송 여부가 불확실하다 — 다시 보내기 전에 read로 확인.`,
+네트워크 오류·타임아웃이면 전송 여부가 불확실하다 — 다시 보내기 전에 read로 확인.
+--at이면 예약 전송(chat.scheduleMessage). 출력은 예약 ID(Q…) — 목록·취소는 Slack 앱의 "예약됨"에서.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			t, err := core.ParseTarget(args[0])
 			if err != nil {
 				return usageError{err}
 			}
-			if thread != "" && !core.TSRe.MatchString(thread) {
-				return usagef("--thread는 Slack ts(1700000000.123456)")
+			if thread, err = replyTS(t, thread); err != nil {
+				return err
 			}
-			if t.Kind == core.TargetPermalink {
-				if thread != "" {
-					return usagef("permalink와 --thread는 함께 쓸 수 없다")
+			var when time.Time
+			if at != "" {
+				if when, err = parseWhen(at, time.Now(), 1); err != nil {
+					return usagef("--at %v", err)
 				}
-				thread = cmp.Or(t.ThreadTS, t.TS) // 링크한 메시지의 스레드에 답글
+				if when.Unix() <= time.Now().Unix() { // Slack은 초 단위 — 1초 안쪽 미래는 과거가 된다
+					return usagef("--at은 미래여야 한다")
+				}
 			}
 			text, err := a.body(args[1:])
 			if err != nil {
@@ -49,26 +55,25 @@ DM 기록이 없는 사용자면 DM을 연다(conversations.open).
 			if err != nil {
 				return err
 			}
-			if t.Kind == core.TargetUserName { // 잘못된 사람에게 보내지 않도록 정확 일치만
-				id, err := s.userID(ctx, t, true)
-				if err != nil {
-					return err
-				}
-				t = core.Target{Kind: core.TargetUserID, ID: id}
-			}
-			ch, err := s.channelID(ctx, t)
-			if nd := (noDMError{}); errors.As(err, &nd) {
-				c, _, _, err := s.api.OpenConversationContext(ctx, &slack.OpenConversationParameters{Users: []string{nd.user}})
-				if err != nil {
-					return err
-				}
-				ch = c.ID
-			} else if err != nil {
+			ch, err := s.sendChannel(ctx, t)
+			if err != nil {
 				return err
 			}
 			opts := []slack.MsgOption{slack.MsgOptionText(text, false)}
 			if thread != "" {
 				opts = append(opts, slack.MsgOptionTS(thread))
+			}
+			if at != "" {
+				postAt := strconv.FormatInt(when.Unix(), 10) // Slack은 Unix 초를 받는다
+				rch, id, err := s.api.ScheduleMessageContext(ctx, ch, postAt, opts...)
+				if err != nil {
+					return err
+				}
+				if a.asJSON { // 보낸 메시지가 아직 없으니 send와 모양이 다르다
+					return a.printJSON(map[string]any{"channel": rch, "scheduled_message_id": id, "post_at": when.Unix()})
+				}
+				fmt.Fprintf(a.out, "예약했다 %s (%s)  ← %s\n", when.Local().Format("01/02 15:04"), id, args[0])
+				return nil
 			}
 			rch, _, m, err := s.api.PostMessageWithResponseContext(ctx, ch, opts...)
 			if err != nil {
@@ -85,7 +90,22 @@ DM 기록이 없는 사용자면 DM을 연다(conversations.open).
 		}),
 	}
 	cmd.Flags().StringVar(&thread, "thread", "", "이 ts의 스레드에 답글")
+	cmd.Flags().StringVar(&at, "at", "", "예약 전송 시각(2h, 1d 또는 RFC3339)")
 	return cmd
+}
+
+// replyTS는 답글을 달 스레드다: permalink면 그 메시지의 스레드, 아니면 --thread(ts) 또는 없음.
+func replyTS(t core.Target, thread string) (string, error) {
+	if thread != "" && !core.TSRe.MatchString(thread) {
+		return "", usagef("--thread는 Slack ts(1700000000.123456)")
+	}
+	if t.Kind != core.TargetPermalink {
+		return thread, nil
+	}
+	if thread != "" {
+		return "", usagef("permalink와 --thread는 함께 쓸 수 없다")
+	}
+	return cmp.Or(t.ThreadTS, t.TS), nil
 }
 
 // body는 인자 하나 또는 stdin(인자가 `-`이거나 없을 때)에서 본문을 받는다.
@@ -210,7 +230,7 @@ func (a *app) reactCmd() *cobra.Command {
 		Short: "리액션 달기(--remove면 떼기). 이미 그 상태면 성공으로 본다",
 		Args:  cobra.RangeArgs(2, 3),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
-			t, rest, err := msgRef(args)
+			t, rest, err := msgRef(args, 1)
 			if err != nil {
 				return err
 			}
@@ -268,7 +288,7 @@ func (a *app) editCmd() *cobra.Command {
 		Long:  "본문을 새 text로 바꾸고 blocks(서식)는 지운다. 터미널이 아니면 --yes가 필요하다.",
 		Args:  cobra.RangeArgs(2, 3),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
-			t, rest, err := msgRef(args)
+			t, rest, err := msgRef(args, 1)
 			if err != nil {
 				return err
 			}
@@ -304,12 +324,9 @@ func (a *app) deleteCmd() *cobra.Command {
 		Long:  "터미널이 아니면 --yes가 필요하다.",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
-			t, rest, err := msgRef(args)
+			t, _, err := msgRef(args, 0)
 			if err != nil {
 				return err
-			}
-			if len(rest) > 0 {
-				return usagef("인자가 너무 많다")
 			}
 			ctx := cmd.Context()
 			s, ch, m, err := a.ownMessage(ctx, t, yes, "삭제할까요? 되돌릴 수 없다.")

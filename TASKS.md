@@ -14,6 +14,7 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [ ] 0.4 실시간 A: Socket Mode로 다른 사람이 보낸 DM/멘션 이벤트 수신(R3). 두 번째 계정 필요
   ✓ envelope ACK, 재접속, 자기 메시지 필터 동작. 연결 중 `users.getPresence`로 active/away 확인(R8)
   → 2026-10-12 부분 완료: xapp 발급, Socket Mode 연결 OK, DM(`message.im`) 이벤트 수신·ack OK(event_id 포함).
+  → 2026-10-12 오후(4시간 연속): **채널 멘션 이벤트 수신 OK**(17:04 #dev `<@나>`), **자기 메시지 필터 OK**, 그룹 멘션 `<!subteam^…>` 수신(소속 판정은 usergroups:read 필요). 내 edit/delete는 `message_changed`/`message_deleted`(user 비어 있음)로 와서 자기 필터를 통과한다 — M3에서 subtype으로 거를 것. **재연결 OK**: 연결 약 5시간 뒤(20:45) Slack이 끊자 slack-go socketmode가 스스로 다시 붙었다(connecting → connected, 이벤트 계속). R8 관찰: 재연결 직후 presence `away, auto_away=true` — Socket Mode 연결은 사용자를 active로 만들지 않는다(앱 연결은 프레즌스에 영향 없음). 데스크톱 앱을 끈 상태 비교는 미확인
     남은 것: ① 채널 멘션(`message.channels`, `<@U0ABCDEFGHI>` 판별) ② 자기 메시지 필터 ③ 재접속 ④ R8 — 데스크톱 앱을 끄고 presence 확인(첫 측정은 active였으나 데스크톱 앱 연결일 수 있음)
     실행: `cd spike && GSLACK_TOKEN=$(cat ~/.config/gslack/spike-xoxp) GSLACK_APP_TOKEN=$(cat ~/.config/gslack/spike-xapp) go run . watch`
 - [x] 0.6 안 읽은 수(A): 채널에 `conversations.info`의 `last_read`가 오는지, DM의 `unread_count` 확인(R2)
@@ -48,13 +49,14 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [x] 1.14 `@이름` 부분 일치: 정확 일치(handle→표시명→실명)가 없으면 세 필드 부분 일치, 여러 명이면 후보 나열(`@민수` → minsu)
 
 ## M2. 확장
+> 2026-10-12 M2b(2.3, `send --at`) 완료 — PLAN-M2b.md. upload는 대상 먼저·stdin 없음. 파일 전송은 전체 타임아웃 없는 별도 클라이언트, 리다이렉트는 Slack으로만. 라이브: download 확인, upload·send --at 미확인
 > 2026-10-12 M2a(2.1, 2.2, 2.4, 2.5의 edit/delete) 완료 — PLAN-M2a.md. M2b: 2.3 upload/download, `send --at`. 라이브(self-DM): react·edit·delete 확인 — user token으로 보낸 내 메시지에도 앱 bot_id가 붙는다(본인 판정은 user로만). status set은 미확인
 - [x] 2.1 `search`(`--in --from`을 쿼리 문법으로 변환, legacy 차이 문서화)
 - [x] 2.2 `react` / `--remove`
-- [ ] 2.3 `upload`(`UploadFile`, external flow), `download`(`files.info` → `url_private_download`, Slack 호스트에만 자격 증명)
+- [x] 2.3 `upload`(`UploadFile`, external flow), `download`(`files.info` → `url_private_download`, Slack 호스트에만 자격 증명)
   ✓ 파일명 충돌 시 덮어쓰지 않음, 부분 다운로드가 남지 않음
 - [x] 2.4 `status set/clear`(presence는 뺌 — 수동 away는 실제 접속 상태를 보장하지 않고, 조회는 `whois`)
-- [ ] 2.5 `edit`, `delete`(확인 + `--yes`) ✓ M2a / `send --at` → M2b(RFC3339/`+2h`, `--tz`, 120일·5분 30개 한계)
+- [x] 2.5 `edit`, `delete`(확인 + `--yes`), `send --at`(RFC3339/`2h`, 미래 검사만, 목록·취소는 Slack 앱)
 
 ## M3. 실시간·마무리
 - [ ] 3.1 이벤트 소스 하나로 Socket Mode(A)와 RTM(B)을 같은 `core.Message` 스트림으로 정규화(3초 ack, `event_id` dedupe, 자기 메시지 필터)

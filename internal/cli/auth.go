@@ -82,7 +82,7 @@ func (a *app) login(cmd *cobra.Command, _ []string) error {
 		return usagef("앱 토큰은 xapp-로 시작한다")
 	}
 
-	res, err := newAPI(sec.Token, sec.Cookie).AuthTestContext(cmd.Context())
+	res, err := newAPI(sec.Token, sec.Cookie, apiTimeout).AuthTestContext(cmd.Context())
 	if err != nil {
 		return err
 	}

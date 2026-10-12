@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -20,7 +21,8 @@ import (
 type session struct {
 	name    string
 	prof    store.Profile
-	api     *slack.Client
+	api     *slack.Client // API 호출: 요청 전체 30초
+	files   *slack.Client // 파일 업로드·다운로드: 전체 제한 없음(큰 파일), Ctrl-C로 끊는다
 	cache   store.Cache
 	refresh bool
 
@@ -30,10 +32,14 @@ type session struct {
 	chansFresh bool
 }
 
-func newAPI(token, cookie string) *slack.Client {
-	hc := &http.Client{Timeout: 30 * time.Second}
+// newAPI는 클라이언트를 만든다. timeout 0이면 요청 전체 제한이 없고(파일 전송용),
+// 응답 헤더까지 30초(요청 본문을 다 보낸 뒤부터)와 Ctrl-C(context)로만 끊는다.
+func newAPI(token, cookie string, timeout time.Duration) *slack.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 30 * time.Second
+	hc := &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: checkRedirect}
 	if cookie != "" {
-		hc.Transport = cookieTransport{cookie: cookie, next: http.DefaultTransport}
+		hc.Transport = cookieTransport{cookie: cookie, next: tr}
 	}
 	rc := slack.DefaultRetryConfig()
 	rc.RetryAfterDuration = 5 * time.Second                                         // Retry-After가 없을 때 기본 60s 멈춤 방지
@@ -46,6 +52,8 @@ func newAPI(token, cookie string) *slack.Client {
 
 var apiURL string // 테스트에서 가짜 서버로 바꾼다
 
+const apiTimeout = 30 * time.Second
+
 // cookieTransport는 xoxc 세션의 d 쿠키를 Slack 호스트로 가는 요청에만 붙인다.
 type cookieTransport struct {
 	cookie string
@@ -53,11 +61,49 @@ type cookieTransport struct {
 }
 
 func (t cookieTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if h := req.URL.Hostname(); req.URL.Scheme == "https" && (h == "slack.com" || strings.HasSuffix(h, ".slack.com")) {
+	if isSlackURL(req.URL) {
 		req = req.Clone(req.Context())
 		req.Header.Set("Cookie", t.cookie)
 	}
 	return t.next.RoundTrip(req)
+}
+
+func isSlackURL(u *url.URL) bool {
+	h := u.Hostname()
+	return u.Scheme == "https" && (h == "slack.com" || strings.HasSuffix(h, ".slack.com"))
+}
+
+// checkRedirect: 리다이렉트는 https Slack(또는 테스트 API 서버)으로만 따른다. 토큰 헤더는 Go가 다른 도메인에서
+// 이미 떼지만, slack-go는 첫 URL만 검사하므로 http 다운그레이드나 Slack 밖 페이지를 "파일"로 받는 것을 여기서 막는다.
+// 직접 정의하면 Go 기본 10홉 제한이 사라져서 다시 둔다.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("리다이렉트가 너무 많다")
+	}
+	if isSlackURL(req.URL) || apiURL != "" && strings.HasPrefix(req.URL.String(), apiURL) {
+		return nil
+	}
+	return fmt.Errorf("Slack 밖으로 리다이렉트하지 않는다: %s", req.URL.Host)
+}
+
+// sendChannel은 보낼 대화 ID다. @이름은 정확 일치만(오발송 방지), DM이 없으면 연다.
+func (s *session) sendChannel(ctx context.Context, t core.Target) (string, error) {
+	if t.Kind == core.TargetUserName {
+		id, err := s.userID(ctx, t, true)
+		if err != nil {
+			return "", err
+		}
+		t = core.Target{Kind: core.TargetUserID, ID: id}
+	}
+	ch, err := s.channelID(ctx, t)
+	if nd := (noDMError{}); errors.As(err, &nd) {
+		c, _, _, err := s.api.OpenConversationContext(ctx, &slack.OpenConversationParameters{Users: []string{nd.user}})
+		if err != nil {
+			return "", err
+		}
+		return c.ID, nil
+	}
+	return ch, err
 }
 
 // open은 GSLACK_TOKEN(있으면) 또는 프로필로 세션을 연다.
@@ -66,12 +112,13 @@ func (a *app) open(ctx context.Context) (*session, error) {
 		return nil, usagef("프로필 이름 %q가 올바르지 않다", a.profile)
 	}
 	if tok := os.Getenv("GSLACK_TOKEN"); tok != "" {
-		api := newAPI(tok, cookieHeader(os.Getenv("GSLACK_COOKIE")))
+		cookie := cookieHeader(os.Getenv("GSLACK_COOKIE"))
+		api := newAPI(tok, cookie, apiTimeout)
 		res, err := api.AuthTestContext(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return &session{name: "env", prof: profileFrom(res, tok), api: api,
+		return &session{name: "env", prof: profileFrom(res, tok), api: api, files: newAPI(tok, cookie, 0),
 			cache: store.OpenCache("env-" + res.TeamID + "-" + res.UserID), refresh: a.refresh}, nil
 	}
 	cfg, err := store.LoadConfig()
@@ -96,7 +143,7 @@ func (a *app) open(ctx context.Context) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &session{name: name, prof: prof, api: newAPI(sec.Token, sec.Cookie),
+	return &session{name: name, prof: prof, api: newAPI(sec.Token, sec.Cookie, apiTimeout), files: newAPI(sec.Token, sec.Cookie, 0),
 		cache: store.OpenCache(name), refresh: a.refresh}, nil
 }
 

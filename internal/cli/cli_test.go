@@ -9,8 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,9 +29,36 @@ type fakeSlack struct {
 	auth      string // auth.test 응답 오류 코드(비면 ok)
 	limitUser bool   // users.list가 계속 429
 	failInfo  bool   // users.info 실패
+	upload    struct{ name, auth, data string }
+	evil      string // 다운로드 리다이렉트가 향할 외부 서버
 }
 
 func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/upload/"): // files.getUploadURLExternal이 준 업로드 URL
+		file, hdr, err := r.FormFile("file")
+		if err == nil {
+			b, _ := io.ReadAll(file)
+			f.mu.Lock()
+			f.upload = struct{ name, auth, data string }{hdr.Filename, r.Header.Get("Authorization"), string(b)}
+			f.mu.Unlock()
+		}
+		w.Write([]byte("OK"))
+		return
+	case r.URL.Path == "/dl/partial": // 본문 중간에 끊긴다
+		w.Header().Set("Content-Length", "100")
+		w.Write([]byte("0123456789"))
+		w.(http.Flusher).Flush()
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		conn.Close()
+		return
+	case strings.HasPrefix(r.URL.Path, "/dl/"):
+		w.Write([]byte("DATA-" + strings.TrimPrefix(r.URL.Path, "/dl/")))
+		return
+	case r.URL.Path == "/redirect":
+		http.Redirect(w, r, f.evil, http.StatusFound)
+		return
+	}
 	r.ParseForm()
 	method := strings.TrimPrefix(r.URL.Path, "/")
 	f.mu.Lock()
@@ -79,6 +110,12 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				m["user"], m["subtype"] = "U0MEMEMEME", "channel_join"
 			}
 			b, _ := json.Marshal(m)
+			switch ts {
+			case "1700000010.000000": // 파일 두 개(하나는 외부)
+				b = []byte(`{"ts":"1700000010.000000","user":"U1AAAAAAAA","files":[{"id":"F1FILEFILE"},{"id":"F2EXTERNAL"}]}`)
+			case "1700000011.000000": // 하나는 받고 하나는 실패
+				b = []byte(`{"ts":"1700000011.000000","user":"U1AAAAAAAA","files":[{"id":"F5PARTIAL0"},{"id":"F1FILEFILE"}]}`)
+			}
 			body = `{"ok":true,"messages":[` + string(b) + `]}`
 			break
 		}
@@ -99,6 +136,21 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = `{"ok":true,"channel":"` + r.Form.Get("channel") + `","ts":"1700000099.000000","message":` + string(m) + `}`
 	case "users.getPresence":
 		body = `{"ok":true,"presence":"active"}`
+	case "files.getUploadURLExternal":
+		body = `{"ok":true,"upload_url":"http://` + r.Host + `/upload/F1","file_id":"F1FILEFILE"}`
+	case "files.completeUploadExternal":
+		body = `{"ok":true,"files":[{"id":"F1FILEFILE","title":"report.txt"}]}`
+	case "files.info":
+		dl := "http://" + r.Host + "/dl/"
+		body = map[string]string{
+			"F1FILEFILE": `{"ok":true,"file":{"id":"F1FILEFILE","name":"report.pdf","url_private_download":"` + dl + `report"}}`,
+			"F2EXTERNAL": `{"ok":true,"file":{"id":"F2EXTERNAL","name":"doc","is_external":true,"permalink":"https://docs.google.com/x"}}`,
+			"F3EVILNAME": `{"ok":true,"file":{"id":"F3EVILNAME","name":"../../evil.txt","url_private_download":"` + dl + `evil"}}`,
+			"F4REDIRECT": `{"ok":true,"file":{"id":"F4REDIRECT","name":"r.bin","url_private_download":"http://` + r.Host + `/redirect"}}`,
+			"F5PARTIAL0": `{"ok":true,"file":{"id":"F5PARTIAL0","name":"p.bin","url_private_download":"` + dl + `partial"}}`,
+		}[r.Form.Get("file")]
+	case "chat.scheduleMessage":
+		body = `{"ok":true,"channel":"` + r.Form.Get("channel") + `","scheduled_message_id":"Q1SCHEDULE","post_at":` + r.Form.Get("post_at") + `}`
 	case "users.info":
 		if f.failInfo {
 			body = `{"ok":false,"error":"fatal_error"}`
@@ -717,5 +769,127 @@ func TestConfirmPrompt(t *testing.T) {
 	}
 	if code, _, _ := gslackIn("y\n", "delete", "general", "1700000005.000000"); code != 0 || len(f.reqs["chat.delete"]) != 1 {
 		t.Errorf("승낙: %d", code)
+	}
+}
+
+func TestUpload(t *testing.T) {
+	f := setup(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.txt")
+	os.WriteFile(path, []byte("hello"), 0o600)
+	code, out, e := gslack("upload", "#general", path, "--thread", "1700000002.000000", "--comment", "hi")
+	if code != 0 || !strings.Contains(out, "올렸다 report.txt (F1FILEFILE)") {
+		t.Fatalf("%d %s %s", code, out, e)
+	}
+	if u := f.upload; u.name != "report.txt" || u.data != "hello" || u.auth != "Bearer xoxp-test" {
+		t.Errorf("업로드 본문: %+v", u)
+	}
+	if g := f.reqs["files.getUploadURLExternal"][0]; g.Get("filename") != "report.txt" || g.Get("length") != "5" {
+		t.Errorf("getUploadURL: %v", g)
+	}
+	if c := f.reqs["files.completeUploadExternal"][0]; c.Get("channel_id") != "C1GENERAL0" || c.Get("thread_ts") != "1700000002.000000" || c.Get("initial_comment") != "hi" {
+		t.Errorf("complete: %v", c)
+	}
+	empty := filepath.Join(dir, "empty")
+	os.WriteFile(empty, nil, 0o600)
+	f.reqs = map[string][]url.Values{}
+	for _, args := range [][]string{{"upload", "general", empty}, {"upload", "general", dir}, {"upload", "general", filepath.Join(dir, "none")},
+		{"upload", "general", path, "--thread", "x"}} {
+		if code, _, _ := gslack(args...); code != 2 || len(f.reqs) != 0 {
+			t.Errorf("%v: %d %v", args, code, f.reqs) // Slack 호출 전에 거절
+		}
+	}
+	if code, _, _ := gslack("upload", "@민수", path); code != 2 || len(f.reqs["files.getUploadURLExternal"]) != 0 {
+		t.Errorf("부분 일치 이름으로 올리면 안 된다: %d", code)
+	}
+	if code, _, _ := gslack("upload", "general", "-"); code != 2 {
+		t.Errorf("stdin: %d", code)
+	}
+	gslack("upload", "@minsu", path, "--title", "T") // DM 없음 → open
+	if c := f.reqs["files.completeUploadExternal"]; len(f.reqs["conversations.open"]) != 1 || c[0].Get("channel_id") != "D2OPENEDDM" || !strings.Contains(c[0].Get("files"), `"title":"T"`) {
+		t.Errorf("DM upload: %v", c)
+	}
+	gslack("upload", "https://acme.slack.com/archives/C1GENERAL0/p1700000002500000?thread_ts=1700000002.000000&cid=C1GENERAL0", path)
+	if c := f.reqs["files.completeUploadExternal"]; c[1].Get("thread_ts") != "1700000002.000000" {
+		t.Errorf("permalink → 스레드: %v", c[1])
+	}
+}
+
+func TestDownload(t *testing.T) {
+	f := setup(t)
+	var evilHit atomic.Bool
+	evil := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { evilHit.Store(true) }))
+	t.Cleanup(evil.Close)
+	f.evil = evil.URL
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "report.pdf"), []byte("old"), 0o600)
+	read := func(name string) string { b, _ := os.ReadFile(filepath.Join(dir, name)); return string(b) }
+
+	if code, out, e := gslack("download", "F1FILEFILE", "-o", dir); code != 0 || read("report (1).pdf") != "DATA-report" || read("report.pdf") != "old" {
+		t.Errorf("덮어쓰지 않고 (1): %d %s %s", code, out, e)
+	}
+	code, out, e := gslack("download", "general", "1700000010.000000", "-o", dir, "--json") // F1 + 외부 F2
+	if code != 0 || read("report (2).pdf") != "DATA-report" || !strings.Contains(e, "docs.google.com") || strings.Count(out, `"id"`) != 1 {
+		t.Errorf("메시지 파일: %d %s %s", code, out, e)
+	}
+	if code, _, _ := gslack("download", "F3EVILNAME", "-o", dir); code != 0 || read("evil.txt") != "DATA-evil" {
+		t.Errorf("../ 이름은 디렉터리 안으로: %d", code)
+	}
+	before, _ := os.ReadDir(dir)
+	if code, _, e := gslack("download", "F4REDIRECT", "-o", dir); code != 1 || evilHit.Load() || !strings.Contains(e, "Slack 밖으로 리다이렉트하지 않는다") {
+		t.Errorf("외부 리다이렉트: %d hit=%v %s", code, evilHit.Load(), e)
+	}
+	if code, _, _ := gslack("download", "F5PARTIAL0", "-o", dir); code != 1 {
+		t.Errorf("중간에 끊긴 다운로드: %d", code)
+	}
+	if after, _ := os.ReadDir(dir); len(after) != len(before) {
+		t.Errorf("실패한 다운로드가 파일을 남겼다: %v", after)
+	}
+	if code, _, e := gslack("download", "general", "1700000011.000000", "-o", dir); code != 0 || !strings.Contains(e, "F5PARTIAL0 실패") || read("report (3).pdf") != "DATA-report" {
+		t.Errorf("하나라도 받으면 성공: %d %s", code, e)
+	}
+	for _, c := range []struct {
+		args []string
+		code int
+	}{{[]string{"download", "F2EXTERNAL", "-o", dir}, 1}, {[]string{"download", "F1FILEFILE", "-o", filepath.Join(dir, "none")}, 2},
+		{[]string{"download", "general", "1700000005.000000", "-o", dir}, 2}} {
+		if code, _, _ := gslack(c.args...); code != c.code {
+			t.Errorf("%v: %d, want %d", c.args, code, c.code)
+		}
+	}
+}
+
+func TestSendAt(t *testing.T) {
+	f := setup(t)
+	code, out, e := gslack("send", "general", "later", "--at", "2h", "--thread", "1700000002.000000", "--json")
+	if code != 0 || !strings.Contains(out, "Q1SCHEDULE") {
+		t.Fatalf("%d %s %s", code, out, e)
+	}
+	sm := f.reqs["chat.scheduleMessage"][0]
+	at, err := strconv.ParseInt(sm.Get("post_at"), 10, 64)
+	if want := time.Now().Add(2 * time.Hour).Unix(); err != nil || at < want-5 || at > want+5 || sm.Get("thread_ts") != "1700000002.000000" || sm.Get("text") != "later" {
+		t.Errorf("scheduleMessage: %v", sm) // post_at은 Unix 초
+	}
+	if len(f.reqs["chat.postMessage"]) != 0 {
+		t.Error("예약인데 바로 보냈다")
+	}
+	f.reqs = map[string][]url.Values{}
+	for _, at := range []string{"2020-01-01T00:00:00Z", "100ms", "soon"} {
+		if code, _, _ := gslack("send", "general", "x", "--at", at); code != 2 || len(f.reqs) != 0 {
+			t.Errorf("--at %s: %d", at, code)
+		}
+	}
+	if code, out, _ := gslack("send", "general", "x", "--at", "1d"); code != 0 || !strings.Contains(out, "(Q1SCHEDULE)  ← general") {
+		t.Errorf("사람용: %d %s", code, out)
+	}
+}
+
+func TestRichTextOnly(t *testing.T) {
+	var m slack.Message
+	json.Unmarshal([]byte(`{"ts":"1.000001","subtype":"huddle_thread","blocks":[{"type":"rich_text","elements":[
+		{"type":"rich_text_section","elements":[{"type":"text","text":"허들이 시작됨 "},{"type":"user","user_id":"U1"},{"type":"link","url":"https://x.com","text":"x"}]},
+		{"type":"rich_text_list","style":"bullet","elements":[{"type":"rich_text_section","elements":[{"type":"text","text":"하나"}]}]}]}]}`), &m)
+	if got, want := fallbackText(m), "허들이 시작됨 <@U1><https://x.com|x>\n• 하나"; got != want {
+		t.Errorf("fallbackText = %q; want %q", got, want)
 	}
 }

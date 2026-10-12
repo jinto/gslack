@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"strings"
 
@@ -87,6 +88,8 @@ func fallbackText(m slack.Message) string {
 			for _, f := range b.Fields {
 				add(f.Text)
 			}
+		case *slack.RichTextBlock: // text가 빈 메시지도 있다(예: Slackbot 허들 알림 — 2026-10-12 실측)
+			add(richText(b.Elements))
 		}
 	}
 	if len(parts) == 0 {
@@ -98,4 +101,41 @@ func fallbackText(m slack.Message) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// richText는 rich_text 블록의 글자를 mrkdwn으로 모은다(목록·인용·코드는 줄 단위로만).
+func richText(els []slack.RichTextElement) string {
+	var b strings.Builder
+	for _, el := range els {
+		var items []slack.RichTextSectionElement
+		switch el := el.(type) {
+		case *slack.RichTextSection:
+			items = el.Elements
+		case *slack.RichTextQuote:
+			items = el.Elements
+		case *slack.RichTextPreformatted:
+			items = el.Elements
+		case *slack.RichTextList:
+			for _, item := range el.Elements {
+				b.WriteString("• " + richText([]slack.RichTextElement{item}))
+			}
+			continue
+		}
+		for _, e := range items {
+			switch e := e.(type) {
+			case *slack.RichTextSectionTextElement:
+				b.WriteString(e.Text)
+			case *slack.RichTextSectionLinkElement:
+				b.WriteString("<" + e.URL + "|" + cmp.Or(e.Text, e.URL) + ">")
+			case *slack.RichTextSectionUserElement:
+				b.WriteString("<@" + e.UserID + ">")
+			case *slack.RichTextSectionChannelElement:
+				b.WriteString("<#" + e.ChannelID + ">")
+			case *slack.RichTextSectionEmojiElement:
+				b.WriteString(":" + e.Name + ":")
+			}
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }

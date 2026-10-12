@@ -83,7 +83,7 @@ gslack --profile <name> <cmd>      # 명령 한 번에만 적용
 gslack channels [--unread] [--type public,private,im,mpim]   # users.conversations(가입한 대화만)
 gslack read <target> [-n 30] [--since 2h] [--before <ts>] [--mark]
 gslack thread <permalink | target ts>
-gslack send <target> [text | -]  [--thread <ts|permalink>] [--at <RFC3339|+2h>] [--tz Asia/Seoul]
+gslack send <target|permalink> [text | -]  [--thread <ts>] [--at <RFC3339|2h>]
 gslack edit <permalink> <text>   · gslack delete <permalink> [--yes]
 gslack unread                    # 안 읽은 채널/DM 요약(A는 근사치)
 gslack mark <target> [--yes]     # 읽음 처리
@@ -91,7 +91,7 @@ gslack users [query] · gslack whois <@user>
 ```
 - **읽음 정책**: `read`는 기본으로 읽음 처리하지 않는다(조회 명령은 상태를 바꾸지 않는다). `--mark`로 켠다. *(기본값, 이견 있으면 변경)*
 - `read`/`thread` 출력에는 ts를 항상 표시한다(다음 명령의 입력이 되므로).
-- `send --at`: 자연어 파싱은 하지 않는다. RFC3339나 `+2h` 같은 상대 시간만 받는다. 시간대는 `--tz`, 없으면 로컬. Slack 한계: 최대 120일 뒤, 채널당 5분에 30개.
+- `send --at`: 자연어 파싱은 하지 않는다. RFC3339(오프셋 포함)나 `2h` 같은 상대 시간만 받는다. 미래인지만 검사하고 Slack 한계(120일, 채널당 5분 30개)는 Slack 오류 그대로. 예약 목록·취소는 Slack 앱에서.
 - `edit/delete/mark`는 확인을 묻고, `--yes`로 생략한다.
 - 캐시에 없는 사용자는 `users.info`로 폴백한다.
 
@@ -104,7 +104,7 @@ gslack search <query> [-n 20] [--in #ch] [--from @user]   # search.messages, use
 ### 4.4 리액션·파일·상태
 ```
 gslack react <permalink> <emoji> [--remove]
-gslack upload <file|-> <target> [--thread …] [--title …]   # files.getUploadURLExternal 흐름
+gslack upload <target|permalink> <file> [--thread …] [--title …] [--comment …]   # files.getUploadURLExternal 흐름, stdin 없음
 gslack download <permalink|file-id> [-o dir]
 gslack status set "<text>" [--emoji :x:] [--until 1h] · gslack status clear
 gslack presence away|auto

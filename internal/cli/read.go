@@ -109,12 +109,9 @@ func (a *app) threadCmd() *cobra.Command {
 		Short: "스레드 전체(부모 + 답글)",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
-			t, rest, err := msgRef(args)
+			t, _, err := msgRef(args, 0)
 			if err != nil {
 				return err
-			}
-			if len(rest) > 0 {
-				return usagef("인자가 너무 많다")
 			}
 			p := &slack.GetConversationRepliesParameters{Limit: 200, Timestamp: cmp.Or(t.ThreadTS, t.TS)}
 			ctx := cmd.Context()
@@ -189,20 +186,23 @@ func parseWhen(s string, now time.Time, dir int) (time.Time, error) {
 	return t, nil
 }
 
-// msgRef는 메시지를 가리키는 인자를 푼다: permalink 하나, 또는 <대상> <ts>. 나머지 인자는 rest.
-func msgRef(args []string) (core.Target, []string, error) {
+// msgRef는 메시지를 가리키는 인자를 푼다: permalink 하나, 또는 <대상> <ts>. 나머지 인자(최대 max개)는 rest.
+func msgRef(args []string, max int) (core.Target, []string, error) {
 	t, err := core.ParseTarget(args[0])
 	if err != nil {
 		return t, nil, usageError{err}
 	}
-	if t.Kind == core.TargetPermalink {
-		return t, args[1:], nil
+	rest := args[1:]
+	if t.Kind != core.TargetPermalink {
+		if len(args) < 2 || !core.TSRe.MatchString(args[1]) {
+			return t, nil, usagef("메시지는 permalink 하나, 또는 대상과 ts(1700000000.123456)로 지정한다")
+		}
+		t.TS, rest = args[1], args[2:]
 	}
-	if len(args) < 2 || !core.TSRe.MatchString(args[1]) {
-		return t, nil, usagef("메시지는 permalink 하나, 또는 대상과 ts(1700000000.123456)로 지정한다")
+	if len(rest) > max {
+		return t, nil, usagef("인자가 너무 많다")
 	}
-	t.TS = args[1]
-	return t, args[2:], nil
+	return t, rest, nil
 }
 
 // fetchMessage는 ts 메시지 하나를 받는다. replies는 스레드 답글 ts를 주면 그 답글만 돌려준다.

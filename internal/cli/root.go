@@ -64,7 +64,8 @@ func (a *app) rootCmd() *cobra.Command {
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
 	root.AddCommand(a.authCmd(), a.channelsCmd(), a.usersCmd(), a.whoisCmd(), a.readCmd(),
 		a.threadCmd(), a.sendCmd(), a.markCmd(), a.unreadCmd(),
-		a.searchCmd(), a.reactCmd(), a.editCmd(), a.deleteCmd(), a.statusCmd())
+		a.searchCmd(), a.reactCmd(), a.editCmd(), a.deleteCmd(), a.statusCmd(),
+		a.uploadCmd(), a.downloadCmd())
 	return root
 }
 
