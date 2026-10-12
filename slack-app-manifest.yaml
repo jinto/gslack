@@ -1,0 +1,42 @@
+# gslack 내부 앱 manifest. api.slack.com/apps → Create New App → From a manifest.
+# Manage Distribution(public distribution)은 절대 켜지 않는다(PRD §3).
+# 설치 후: Basic Information → App-Level Tokens에서 connections:write 토큰(xapp) 생성.
+display_information:
+  name: gslack
+  description: Terminal Slack client (personal, internal)
+oauth_config:
+  scopes:
+    user:
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+      - channels:read
+      - groups:read
+      - im:read
+      - mpim:read
+      - channels:write
+      - groups:write
+      - im:write
+      - mpim:write
+      - chat:write
+      - reactions:read
+      - reactions:write
+      - files:read
+      - files:write
+      - search:read
+      - users:read
+      - usergroups:read
+      - users.profile:write
+      - users:write
+      - emoji:read
+settings:
+  event_subscriptions:
+    user_events:
+      - message.im
+      - message.mpim
+      - message.channels
+      - message.groups
+  socket_mode_enabled: true
+  org_deploy_enabled: false
+  token_rotation_enabled: false
