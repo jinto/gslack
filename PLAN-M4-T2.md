@@ -27,8 +27,8 @@
 
 ## 화면
 - 줄: `done`이면 `●` 대신 공백 + `lipgloss.NewStyle().Faint(true)`. `R`로 다시 채우면 치운 대화는 안 읽음에서 빠지므로 그대로 사라진다(T2에서 `done` 보존은 필요 없음). **알려진 빈틈**: `m`·답장 전에 이미 돌던 fill이 늦게 오면 치운 줄이 다음 `R`까지 ●로 돌아온다.
-- 답장 중엔 아래 구분선 자리에 입력줄(` 답장 @이름 ↳> …`) — 높이 계산은 그대로. `textinput.CharLimit = 0`(제한 없음, 기본값). `WindowSizeMsg`에서 `ti.Width`를 맞춘다 — 0이면 긴 본문이 두 줄이 되어 높이가 밀린다.
-- 키 힌트: `j/k 이동  Enter 열기  r 답장  m 치우기  o 열기(브라우저)  R 새로고침  q 끝`. 답장 중엔 `Enter 보내기  Esc 취소`.
+- 답장 중엔 아래 구분선 자리에 입력줄(` 답장 @이름 ↳ > …`) — 높이 계산은 그대로. `textinput.CharLimit = 0`(제한 없음, 기본값). `WindowSizeMsg`에서 `ti.Width`를 맞춘다 — 0이면 긴 본문이 두 줄이 되어 높이가 밀린다.
+- 키 힌트: `j/k 이동  Enter 열기  r 답장  m 치우기  o 브라우저  R 새로고침  q 끝`. 답장 중엔 `Enter 보내기  Esc 취소`.
 
 ## 테스트(tui_test.go, fakeSlack)
 - `r`: 빈 목록이면 무시. DM 줄에서 `r` → 글자 입력 → Enter → Cmd 실행 → `chat.postMessage`에 `thread_ts` 없음, `conversations.mark` ts = 보낸 ts(`1700000099.000000`), 줄 `done`, 입력 닫힘.

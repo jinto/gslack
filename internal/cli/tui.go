@@ -78,10 +78,14 @@ type (
 		err    error
 		latest string // history 미리보기의 최신 ts — 스레드 미리보기는 ""(답글 ts로 대화를 mark하면 사이의 안 본 메시지까지 읽음이 된다)
 	}
-	sentMsg   struct{ err, markErr error }
+	sentMsg struct {
+		row          tuiRow
+		ts           string // 보낸 메시지
+		err, markErr error
+	}
 	markedMsg struct {
-		ch  string
-		err error
+		ch, ts string
+		err    error
 	}
 )
 
@@ -202,20 +206,21 @@ func (m *tuiModel) send(text string) tea.Cmd {
 		}
 		ch, ts, _, err := s.api.PostMessageWithResponseContext(ctx, r.row.ch.ID, opts...)
 		if err != nil {
-			return sentMsg{err: err}
+			return sentMsg{row: r.row, err: err}
 		}
-		return sentMsg{markErr: s.markRead(ctx, ch, ts)}
+		return sentMsg{r.row, ts, nil, s.markRead(ctx, ch, ts)}
 	}
 }
 
 // mark는 줄의 최신 메시지까지, 그 대화를 미리보기로 봤으면 거기 최신까지 치운다.
 func (m *tuiModel) mark(r tuiRow) tea.Cmd {
+	m.status = ""
 	ts := r.latest.TS
 	if m.pv.ch == r.ch.ID {
 		ts = max(ts, m.pv.ts) // 고정폭 ts라 문자열 비교
 	}
 	ctx, s := m.ctx, m.s
-	return func() tea.Msg { return markedMsg{r.ch.ID, s.markRead(ctx, r.ch.ID, ts)} }
+	return func() tea.Msg { return markedMsg{r.ch.ID, ts, s.markRead(ctx, r.ch.ID, ts)} }
 }
 
 // markRead는 markTo의 "이미 더 뒤까지 읽음" 거절을 성공으로 본다 — 치우려던 것은 이미 치워져 있다.
@@ -232,7 +237,7 @@ func rejected(err error) bool {
 	var se slack.SlackErrorResponse
 	var rl *slack.RateLimitedError
 	var sc slack.StatusCodeError
-	return errors.As(err, &se) || errors.As(err, &rl) || errors.As(err, &sc) && sc.Code < 500
+	return errors.As(err, &se) || errors.As(err, &rl) || (errors.As(err, &sc) && sc.Code < 500)
 }
 
 // openURL은 변수다 — 테스트가 바꾼다.
@@ -243,8 +248,9 @@ var openURL = func(u string) error {
 	return exec.Command("open", u).Run()
 }
 
-func (m *tuiModel) setDone(ch string) {
-	if i := slices.IndexFunc(m.rows, func(r tuiRow) bool { return r.ch.ID == ch }); i >= 0 {
+// setDone은 ts까지 읽은 대화의 줄을 치운다. 그 사이 R로 더 새 메시지가 든 줄이면 둔다.
+func (m *tuiModel) setDone(ch, ts string) {
+	if i := slices.IndexFunc(m.rows, func(r tuiRow) bool { return r.ch.ID == ch }); i >= 0 && m.rows[i].latest.TS <= ts {
 		m.rows[i].done = true
 	}
 }
@@ -330,7 +336,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case sentMsg:
 		m.sending = false
-		r := m.reply.row
+		r := msg.row
 		switch {
 		case msg.err != nil && rejected(msg.err): // 입력은 남긴다
 			m.status = "보내기 실패: " + msg.err.Error()
@@ -342,7 +348,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "보냈다 — 읽음 처리 실패(m으로 다시): " + msg.markErr.Error()
 		default:
 			m.status = "보냈다"
-			m.setDone(r.ch.ID)
+			m.setDone(r.ch.ID, msg.ts)
 		}
 		m.closeReply()
 		return m, m.preview(r)
@@ -351,7 +357,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "치우기 실패: " + msg.err.Error()
 			return m, nil
 		}
-		m.setDone(msg.ch)
+		m.setDone(msg.ch, msg.ts)
 	case tea.KeyMsg:
 		if m.reply != nil {
 			return m.replyKey(msg)

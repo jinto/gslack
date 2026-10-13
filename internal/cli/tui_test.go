@@ -180,7 +180,7 @@ func TestTUIReplyFailure(t *testing.T) {
 		m.Update(press("r"))
 		typeText(m, "hi")
 		m.Update(press("enter"))
-		_, cmd := m.Update(sentMsg{err: c.err})
+		_, cmd := m.Update(sentMsg{row: m.rows[0], err: c.err})
 		if m.sending || m.reply == nil || m.ti.Value() != "hi" || !strings.Contains(m.status, c.msg) || (cmd == nil) != c.sure {
 			t.Errorf("%v: reply %v 입력 %q 상태 %q 미리보기 %v", c.err, m.reply != nil, m.ti.Value(), m.status, cmd != nil)
 		}
@@ -190,7 +190,7 @@ func TestTUIReplyFailure(t *testing.T) {
 	m.Update(press("r"))
 	typeText(m, "hi")
 	m.Update(press("enter"))
-	m.Update(sentMsg{markErr: errors.New("boom")})
+	m.Update(sentMsg{row: m.rows[0], ts: "1700000099.000000", markErr: errors.New("boom")})
 	if m.reply != nil || m.rows[0].done || !strings.Contains(m.status, "읽음 처리 실패") {
 		t.Errorf("읽음 실패: %v %v %q", m.reply != nil, m.rows[0].done, m.status)
 	}
@@ -235,6 +235,42 @@ func TestTUIMark(t *testing.T) {
 	m.Update(cmd())
 	if len(f.reqs["conversations.mark"]) != 1 || !m.rows[0].done || m.status != "" {
 		t.Errorf("거절=성공: %v %q", f.reqs["conversations.mark"], m.status)
+	}
+
+	// 실패는 상태줄에. 치우는 사이 R로 더 새 메시지가 든 줄은 done이 되지 않는다.
+	m.rows[0].done = false
+	m.Update(markedMsg{"C1GENERAL0", "1700000001.000000", errors.New("boom")})
+	m.Update(markedMsg{"C1GENERAL0", "1700000000.000000", nil})
+	if m.rows[0].done || !strings.Contains(m.status, "치우기 실패") {
+		t.Errorf("실패·낡은 결과: %v %q", m.rows[0].done, m.status)
+	}
+}
+
+func TestTUIReplyThreadRow(t *testing.T) {
+	f, m := filledTUI(t)
+	m.rows[0].latest.ThreadTS = "1700000001.000000" // 스레드 답글 줄
+	m.Update(press("r"))
+	typeText(m, "ok")
+	_, cmd := m.Update(press("enter"))
+	m.Update(cmd())
+	if p := f.reqs["chat.postMessage"]; len(p) != 1 || p[0].Get("thread_ts") != "1700000001.000000" {
+		t.Errorf("스레드로: %v", p)
+	}
+}
+
+func TestTUIEmptyKeys(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+	a := &app{out: &bytes.Buffer{}, errw: &bytes.Buffer{}}
+	s, err := a.open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTUI(ctx, a, s)
+	for _, k := range []string{"r", "m", "o"} {
+		if _, cmd := m.Update(press(k)); cmd != nil || m.reply != nil {
+			t.Errorf("빈 목록 %s", k)
+		}
 	}
 }
 
