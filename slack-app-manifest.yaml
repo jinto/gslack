@@ -20,7 +20,6 @@ oauth_config:
       - im:write
       - mpim:write
       - chat:write
-      - reactions:read
       - reactions:write
       - files:read
       - files:write
@@ -28,8 +27,6 @@ oauth_config:
       - users:read
       - usergroups:read
       - users.profile:write
-      - users:write
-      - emoji:read
 settings:
   event_subscriptions:
     user_events:

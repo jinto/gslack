@@ -19,7 +19,8 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
     실행: `cd spike && GSLACK_TOKEN=$(cat ~/.config/gslack/spike-xoxp) GSLACK_APP_TOKEN=$(cat ~/.config/gslack/spike-xapp) go run . watch`
 - [x] 0.6 안 읽은 수(A): 채널에 `conversations.info`의 `last_read`가 오는지, DM의 `unread_count` 확인(R2)
   → 2026-10-12: public/group/mpim/im 모두 `last_read`가 온다. `unread_count`는 전부 0 — 비공개 채널 1곳은 last_read 이후 메시지가 1건 있는데도 0이었다. 따라서 `unread_count`는 쓰지 않고, 대화마다 `conversations.history(oldest=last_read)`로 센다(대화당 info+history 2회 호출 → `unread`는 최근 활동 대화로 범위를 줄이거나 느린 명령으로 둔다). DM의 `unread_count` 동작은 안 읽은 DM이 없어서 미확인
-- [ ] 0.7 결과를 PRD §3·§7에 반영하고 명령별 인증 방식·scope 매트릭스를 확정
+- [x] 0.7 결과를 PRD §3·§7에 반영하고 명령별 인증 방식·scope 매트릭스를 확정
+  → 2026-10-13 M3c c.4에서 완료
 
 **B 경로(독립 spike, M0을 막지 않음)**
 - [x] 0.3 xoxc+d: 쿠키 RoundTripper로 0.2와 같은 호출 + 파일 업로드 1건(R7)
@@ -85,7 +86,9 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [x] c.3 (3.1) `watch`에 RTM 소스: xapp 없이 session으로. 모든 채널 메시지가 오므로 기존 `keep` 필터 재사용, 연결 중 presence active
   → 2026-10-13 구현 — PLAN-M3c-c3.md. session 프로필이면 RTM(xapp 있어도), 아니면 Socket Mode. RTM 메시지를 `slackevents.MessageEvent`로 바꿔 `keep`·출력(`emit`)을 그대로 쓴다. channel_type은 가입 대화 캐시(+`D` 접두)로 채움. 쿠키 Jar `.slack.com`(spike 그대로), 쿠키 없으면 usage 오류. `InvalidAuthEvent`·ok:false 거절은 종료(slack-go는 인증 오류 외엔 영원히 재시도 — Socket Mode에도 같이 적용). 테스트: 가짜 ws 서버 e2e(필터 5종), 인증 실패·거절·쿠키 없음.
     **라이브 확인 필요(사용자)**: `--profile acme-session watch` 연결·DM 수신, RTM 스레드 답글에 `parent_user_id`/broadcast에 `root`가 오는지(내 스레드 답글 알림), 데스크톱 앱 끈 상태의 presence
-- [ ] c.4 (0.7) PRD §3·§7에 결과 반영, 명령별 인증·scope 매트릭스
+- [x] c.4 (0.7) PRD §3·§7에 결과 반영, 명령별 인증·scope 매트릭스
+  → 2026-10-13 완료(문서 작업이라 계획 리뷰는 생략하고 Codex·Fable 사실 확인 한 번). §3 A/B 표를 실측으로, 매트릭스는 공통 scope(`*:read users:read`) + 명령별 추가 scope + session 라이브 여부, §7 R1~R9 상태. 틀린 줄 정리(`channels --unread`, `presence`, `--type`, unread "정확"). manifest에서 안 쓰는 `reactions:read emoji:read users:write` 제거(설치된 앱은 그대로 둬도 됨).
+    session으로 미확인: mark·send·edit/delete·search·react·status·그룹 멘션 — 쓰기 명령은 셀프 DM으로 사용자가
 
 ## M4. TUI(별도 기획)
 - [ ] M1~M3 코어를 재사용하는 TUI PRD 작성
