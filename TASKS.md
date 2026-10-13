@@ -74,5 +74,12 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [x] 3.5 셸 자동완성(cobra completion + 캐시 기반 채널/사용자 이름) — 채널은 `#` 없는 맨 이름(eval에서 주석), 네트워크 0회
 - [x] 3.6 README(앱 설치법, 두 인증 방식, B는 비공식 표기), goreleaser(`release.disable` — remote 없음). xoxc 추출법은 B spike 후
 
+## M3c. B 경로 활용(다음 작업 — 이 순서로)
+> 2026-10-13 B spike(0.3·0.5·0.8) 통과 후 사용자와 정한 순서. 각 항목은 work pipeline(PLAN → 리뷰 → 구현 → 리뷰 → ponytail)으로
+- [ ] c.1 `gslack auth import`: Slack 데스크톱 앱 로컬 저장소에서 xoxc(LevelDB `localConfig_v2`) + `d` 쿠키(Cookies sqlite, Keychain "Slack Safe Storage"로 복호화)를 읽어 프로필 생성 — DevTools 손 작업 제거. 비공식이라 Slack 업데이트로 깨질 수 있음을 help에
+- [ ] c.2 `unread`: session(xoxc) 프로필이면 `client.counts` 한 번(0.4초). 264개 중 105개만 오는 범위 차이 확인, 실패 시 A 방식 폴백(R6)
+- [ ] c.3 (3.1) `watch`에 RTM 소스: xapp 없이 session으로. 모든 채널 메시지가 오므로 기존 `keep` 필터 재사용, 연결 중 presence active
+- [ ] c.4 (0.7) PRD §3·§7에 결과 반영, 명령별 인증·scope 매트릭스
+
 ## M4. TUI(별도 기획)
 - [ ] M1~M3 코어를 재사용하는 TUI PRD 작성
