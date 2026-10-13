@@ -49,6 +49,7 @@ func TestParseTarget(t *testing.T) {
 func TestRender(t *testing.T) {
 	user := func(id string) string { return map[string]string{"U1AAAAAAAA": "jaekwon"}[id] }
 	ch := func(id string) string { return map[string]string{"C1AAAAAAAA": "general"}[id] }
+	group := func(id string) string { return map[string]string{"S1AAAAAAAA": "devs"}[id] }
 	cases := []struct{ in, want string }{
 		{"hi <@U1AAAAAAAA>", "hi @jaekwon"},
 		{"hi <@W9ZZZZZZZZ>", "hi @W9ZZZZZZZZ"},
@@ -56,6 +57,7 @@ func TestRender(t *testing.T) {
 		{"see <#C1AAAAAAAA>, <#C2BBBBBBBB|random>", "see #general, #random"},
 		{"<!here> <!channel> <!everyone>", "@here @channel @everyone"},
 		{"<!subteam^S123|@devs> ping", "@devs ping"},
+		{"<!subteam^S1AAAAAAAA> <!subteam^S2BBBBBBBB>", "@devs @subteam"},
 		{"<!date^1392734382^{date}|Feb 18, 2014>", "Feb 18, 2014"},
 		{"<mailto:a@b.com|a@b.com>", "a@b.com"},
 		{"<https://x.com/?a=1&amp;b=2|docs>", "docs (https://x.com/?a=1&b=2)"},
@@ -63,7 +65,7 @@ func TestRender(t *testing.T) {
 		{"a &lt;b&gt; &amp;amp;", "a <b> &amp;"},
 	}
 	for _, c := range cases {
-		if got := Render(c.in, user, ch); got != c.want {
+		if got := Render(c.in, user, ch, group); got != c.want {
 			t.Errorf("Render(%q) = %q; want %q", c.in, got, c.want)
 		}
 	}

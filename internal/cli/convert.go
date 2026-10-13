@@ -51,8 +51,8 @@ func (s *session) message(ctx context.Context, m slack.Message, channel string) 
 		if m.BotProfile != nil && m.BotProfile.Name != "" {
 			out.UserName = m.BotProfile.Name
 		}
-		if out.UserName == "" {
-			out.UserName = m.BotID
+		if out.UserName == "" { // cmp.Or는 인자를 먼저 다 평가한다 — 이름을 아는 봇에 bots.info를 부르지 않게
+			out.UserName = cmp.Or(s.botName(ctx, m.BotID), m.BotID)
 		}
 	}
 	if out.Text == "" {
@@ -131,6 +131,10 @@ func richText(els []slack.RichTextElement) string {
 				b.WriteString("<@" + e.UserID + ">")
 			case *slack.RichTextSectionChannelElement:
 				b.WriteString("<#" + e.ChannelID + ">")
+			case *slack.RichTextSectionUserGroupElement:
+				b.WriteString("<!subteam^" + e.UsergroupID + ">")
+			case *slack.RichTextSectionBroadcastElement:
+				b.WriteString("<!" + e.Range + ">")
 			case *slack.RichTextSectionEmojiElement:
 				b.WriteString(":" + e.Name + ":")
 			}

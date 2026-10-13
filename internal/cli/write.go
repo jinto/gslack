@@ -39,10 +39,11 @@ DM 기록이 없는 사용자면 DM을 연다(conversations.open).
 			}
 			var when time.Time
 			if at != "" {
-				if when, err = parseWhen(at, time.Now(), 1); err != nil {
+				now := time.Now()
+				if when, err = parseWhen(at, now, 1); err != nil {
 					return usagef("--at %v", err)
 				}
-				if when.Unix() <= time.Now().Unix() { // Slack은 초 단위 — 1초 안쪽 미래는 과거가 된다
+				if when.Unix() <= now.Unix()+1 { // Slack은 초 단위 — 초 경계를 넘는 100ms도 과거가 되게 1초 여유
 					return usagef("--at은 미래여야 한다")
 				}
 			}
@@ -216,7 +217,7 @@ func (a *app) confirm(prompt string) bool {
 
 // preview는 첫 줄을 n자(rune)로 자른다.
 func preview(s string, n int) string {
-	s, _, _ = strings.Cut(s, "\n")
+	s, _, _ = strings.Cut(strings.TrimSpace(s), "\n")
 	if r := []rune(s); len(r) > n {
 		return string(r[:n]) + "…"
 	}

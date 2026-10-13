@@ -236,9 +236,21 @@ func withTags(text string, m core.Message) string {
 	return text
 }
 
+// trimBlankLines는 앞뒤 빈 줄만 버린다(첫 줄 들여쓰기는 남긴다 — 코드 블록).
+func trimBlankLines(s string) string {
+	lines := strings.Split(s, "\n")
+	blank := func(l string) bool { return strings.TrimSpace(l) == "" }
+	for len(lines) > 0 && blank(lines[0]) {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && blank(lines[len(lines)-1]) {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // printMessages: 날짜가 바뀌면 머리줄, 메시지마다 ts를 항상 앞에 둔다(다음 명령의 입력).
 func (s *session) printMessages(ctx context.Context, w io.Writer, msgs []core.Message) {
-	user := func(id string) string { return s.userName(ctx, id) }
 	const indent = "                          " // ts(17) + 2 + HH:MM(5) + 2
 	lastDay := ""
 	for _, m := range msgs {
@@ -247,7 +259,7 @@ func (s *session) printMessages(ctx context.Context, w io.Writer, msgs []core.Me
 			fmt.Fprintf(w, "── %s ──\n", day)
 			lastDay = day
 		}
-		text := withTags(core.Render(m.Text, user, s.channelName), m)
+		text := withTags(trimBlankLines(s.render(ctx, m.Text)), m)
 		name := m.UserName
 		if name == "" {
 			name = m.User

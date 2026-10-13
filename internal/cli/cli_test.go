@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jinto/gslack/internal/core"
+	"github.com/jinto/gslack/internal/store"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
@@ -184,7 +185,25 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			{"id":"G1NEVERREAD","name":"never","is_private":true},
 			{"id":"D3UNREADDM","is_im":true,"user":"U3HHHHHHHH"},
 			{"id":"C9GONEGONE","name":"gone","is_channel":true}],"response_metadata":{"next_cursor":""}}`
+	case "bots.info":
+		body = `{"ok":false,"error":"bot_not_found"}`
+		if r.Form.Get("bot") == "B2BOTBOTBO" {
+			body = `{"ok":true,"bot":{"id":"B2BOTBOTBO","name":"jenkins"}}`
+		}
+	case "usergroups.list":
+		body = `{"ok":true,"usergroups":[{"id":"S1DEVSDEVS","handle":"devs","users":["U0MEMEMEME"]}]}`
 	case "conversations.history":
+		if r.Form.Get("channel") == "C2RENDER00" { // 렌더링 결함 G1~G3(2026-10-13 실측)
+			body = `{"ok":true,"messages":[
+				{"ts":"1700000006.000000","bot_id":"B4PROFILED","bot_profile":{"name":"Deploy Bot"},"text":"x"},
+				{"ts":"1700000005.000000","bot_id":"B3GONEGONE","text":"again"},
+				{"ts":"1700000004.000000","bot_id":"B3GONEGONE","text":"gone"},
+				{"ts":"1700000003.000000","bot_id":"B2BOTBOTBO","text":"<!subteam^S1DEVSDEVS> <!subteam^S9NOPENOPE> build"},
+				{"ts":"1700000002.000000","user":"U1AAAAAAAA","text":"","blocks":[{"type":"rich_text","elements":[{"type":"rich_text_section",
+				 "elements":[{"type":"usergroup","usergroup_id":"S1DEVSDEVS"},{"type":"text","text":" "},{"type":"broadcast","range":"here"}]}]}]},
+				{"ts":"1700000001.000000","user":"U1AAAAAAAA","text":"\n\n    go test\n  \n"}]}`
+			break
+		}
 		if r.Form.Get("channel") == "D3UNREADDM" { // 본인 메시지와 입장은 세지 않는다
 			body = `{"ok":true,"messages":[{"ts":"1700000005.000000","user":"U0MEMEMEME","text":"mine"},
 				{"ts":"1700000004.000000","user":"U3HHHHHHHH","subtype":"channel_join","text":"joined"},
@@ -885,6 +904,29 @@ func TestSendAt(t *testing.T) {
 	}
 }
 
+func TestRenderGaps(t *testing.T) {
+	f := setup(t)
+	code, out, e := gslack("read", "C2RENDER00", "-n", "6")
+	if code != 0 {
+		t.Fatalf("%d %s", code, e)
+	}
+	for _, want := range []string{
+		"@jk:     go test\n", // 앞 빈 줄은 버리고 들여쓰기는 남긴다
+		"@jk: @devs @here\n", // rich_text의 그룹·broadcast
+		"@jenkins: @devs @subteam build", "@B3GONEGONE: gone", "@B3GONEGONE: again",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("출력에 %q 없음:\n%s", want, out)
+		}
+	}
+	if n, g := len(f.reqs["bots.info"]), len(f.reqs["usergroups.list"]); n != 2 || g != 1 {
+		t.Errorf("bots.info %d회(실패도 메모해 2), usergroups.list %d회", n, g)
+	}
+	if got := preview("\n\n  첫 줄\n둘째", 80); got != "첫 줄" {
+		t.Errorf("preview = %q", got)
+	}
+}
+
 func TestRichTextOnly(t *testing.T) {
 	var m slack.Message
 	json.Unmarshal([]byte(`{"ts":"1.000001","subtype":"huddle_thread","blocks":[{"type":"rich_text","elements":[
@@ -960,5 +1002,48 @@ func TestWatchNeedsAppToken(t *testing.T) {
 	}
 	if len(f.reqs["users.conversations"]) != 0 {
 		t.Error("토큰 검사 전에 대화 목록을 받았다")
+	}
+}
+
+func TestCompletion(t *testing.T) {
+	f := setup(t)
+	t.Setenv("GSLACK_TOKEN", "") // 프로필 모드 — env 모드는 완성하지 않는다
+	cfg := &store.Config{Current: "work", Profiles: map[string]store.Profile{"work": {}, "home": {}}}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	c := store.OpenCache("work")
+	store.SaveCache(c, "channels", []core.Channel{{ID: "C1", Name: "general", Kind: core.KindPublic},
+		{ID: "C2", Name: "gen-ai", Kind: core.KindPrivate}, {ID: "D1", Kind: core.KindIM}, {ID: "G1", Name: "mpdm-a", Kind: core.KindMPIM}})
+	store.SaveCache(c, "users", []core.User{{ID: "U1", Name: "jaekwon", DisplayName: "재권"}, {ID: "U2", Name: "jaeold", Deleted: true}})
+	cases := []struct {
+		args []string
+		want string // 후보들 + 마지막 줄 directive
+	}{
+		{[]string{"read", "gen"}, "general\ngen-ai\n:4"},
+		{[]string{"read", "general", ""}, ":4"},   // 둘째 인자 없음
+		{[]string{"upload", "general", ""}, ":0"}, // 파일 완성
+		{[]string{"whois", "@j"}, "@jaekwon\t재권\n:4"},
+		{[]string{"send", "@"}, "@jaekwon\t재권\n:4"},
+		{[]string{"watch", "general", "ge"}, "general\ngen-ai\n:4"},
+		{[]string{"search", "x", "--from", "@"}, "@jaekwon\t재권\n:4"},
+		{[]string{"auth", "use", ""}, "home\nwork\n:4"},
+		{[]string{"read", "--profile", "home", "ge"}, ":4"}, // home 캐시 없음
+		{[]string{"read", "--profile", ""}, "home\nwork\n:4"},
+		{[]string{"search", "x", "--in", "ge"}, "general\ngen-ai\n:4"},
+		{[]string{"users", ""}, ":4"},
+	}
+	for _, tc := range cases {
+		_, out, _ := gslack(append([]string{"__complete"}, tc.args...)...)
+		if got := strings.TrimSpace(out); got != tc.want {
+			t.Errorf("%v:\n%s\nwant\n%s", tc.args, got, tc.want)
+		}
+	}
+	t.Setenv("GSLACK_TOKEN", "xoxp-test")
+	if _, out, _ := gslack("__complete", "read", "gen"); strings.TrimSpace(out) != ":4" {
+		t.Errorf("env 모드: %q", out)
+	}
+	if len(f.reqs) != 0 {
+		t.Errorf("완성이 API를 불렀다: %v", f.reqs)
 	}
 }

@@ -40,9 +40,13 @@ func Execute(ctx context.Context, args []string, in io.Reader, out, errw io.Writ
 	return exitCode(err)
 }
 
+// Version은 릴리스 빌드가 -ldflags "-X github.com/jinto/gslack/internal/cli.Version=…"로 넣는다.
+var Version = "dev"
+
 func (a *app) rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "gslack",
+		Version:       Version,
 		Short:         "터미널에서 쓰는 Slack",
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -66,6 +70,7 @@ func (a *app) rootCmd() *cobra.Command {
 		a.threadCmd(), a.sendCmd(), a.markCmd(), a.unreadCmd(),
 		a.searchCmd(), a.reactCmd(), a.editCmd(), a.deleteCmd(), a.statusCmd(),
 		a.uploadCmd(), a.downloadCmd(), a.watchCmd())
+	a.addCompletions(root)
 	return root
 }
 

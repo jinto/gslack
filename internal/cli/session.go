@@ -31,6 +31,16 @@ type session struct {
 	usersFresh bool
 	chans      []core.Channel
 	chansFresh bool
+	groups     []slack.UserGroup // usergroups.list — 실행당 한 번(groupsErr와 함께)
+	groupsErr  error
+	groupsDone bool
+	bots       map[string]string // bot_id → 이름(실패는 "")
+}
+
+// render는 mrkdwn을 이 세션의 이름으로 푼다.
+func (s *session) render(ctx context.Context, text string) string {
+	return core.Render(text, func(id string) string { return s.userName(ctx, id) }, s.channelName,
+		func(id string) string { return s.groupName(ctx, id) })
 }
 
 // newAPI는 클라이언트를 만든다. timeout 0이면 요청 전체 제한이 없고(파일 전송용),
@@ -171,7 +181,7 @@ func (s *session) loadUsers(ctx context.Context, force bool) error {
 	if s.users != nil && !force {
 		return nil
 	}
-	items, ok := store.LoadCache[core.User](s.cache, "users")
+	items, ok := store.LoadCache[core.User](s.cache, "users", store.CacheTTL)
 	if !ok || s.refresh || force {
 		// GetUsersContext는 429를 횟수 제한 없이 재시도한다 — 페이지를 직접 돌리고 오류는 그대로 낸다.
 		items = nil
@@ -297,7 +307,7 @@ func (s *session) loadChannels(ctx context.Context, force bool) error {
 	if s.chans != nil && !force {
 		return nil
 	}
-	items, ok := store.LoadCache[core.Channel](s.cache, "channels")
+	items, ok := store.LoadCache[core.Channel](s.cache, "channels", store.CacheTTL)
 	if !ok || s.refresh || force {
 		items = nil
 		p := &slack.GetConversationsForUserParameters{
@@ -320,6 +330,45 @@ func (s *session) loadChannels(ctx context.Context, force bool) error {
 	}
 	s.chans = items
 	return nil
+}
+
+// loadGroups는 사용자 그룹을 실행당 한 번 받는다(디스크 캐시 없음 — 라벨 없는 그룹 멘션과 watch만 쓴다).
+// 429·네트워크 오류도 기억한다 — 멘션마다 다시 부르는 것보다 @subteam으로 두는 게 낫다.
+func (s *session) loadGroups(ctx context.Context) ([]slack.UserGroup, error) {
+	if !s.groupsDone {
+		s.groups, s.groupsErr = s.api.GetUserGroupsContext(ctx, slack.GetUserGroupsOptionIncludeUsers(true))
+		s.groupsDone = true
+	}
+	return s.groups, s.groupsErr
+}
+
+func (s *session) groupName(ctx context.Context, id string) string {
+	gs, _ := s.loadGroups(ctx)
+	for _, g := range gs {
+		if g.ID == id {
+			return g.Handle
+		}
+	}
+	return ""
+}
+
+// botName은 bot_id만 있는 메시지(username·bot_profile 없음)의 봇 이름이다. 확정 실패도 기억한다.
+func (s *session) botName(ctx context.Context, id string) string {
+	if n, ok := s.bots[id]; ok {
+		return n
+	}
+	b, err := s.api.GetBotInfoContext(ctx, slack.GetBotInfoParameters{Bot: id})
+	if s.bots == nil {
+		s.bots = map[string]string{}
+	}
+	var se slack.SlackErrorResponse
+	switch {
+	case err == nil:
+		s.bots[id] = b.Name
+	case errors.As(err, &se): // bot_not_found·missing_scope — 429·네트워크는 다시 시도
+		s.bots[id] = ""
+	}
+	return s.bots[id]
 }
 
 func (s *session) channelName(id string) string {

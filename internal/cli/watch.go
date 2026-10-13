@@ -147,8 +147,7 @@ func (a *app) watch(ctx context.Context, s *session, w *watcher, notify bool) er
 				continue
 			}
 			m := s.message(ctx, raw, e.Channel)
-			text := core.Render(m.Text, func(id string) string { return s.userName(ctx, id) }, s.channelName)
-			where, body := s.where(e, m), preview(withTags(text, m), 120)
+			where, body := s.where(e, m), preview(withTags(s.render(ctx, m.Text), m), 120)
 			if m.ThreadTS != "" && m.ThreadTS != m.TS {
 				body = "↳ " + body
 			}
@@ -184,7 +183,7 @@ func (s *session) where(e *slackevents.MessageEvent, m core.Message) string {
 
 // myGroups는 내가 속한 사용자 그룹 ID다.
 func (s *session) myGroups(ctx context.Context) (map[string]bool, error) {
-	gs, err := s.api.GetUserGroupsContext(ctx, slack.GetUserGroupsOptionIncludeUsers(true))
+	gs, err := s.loadGroups(ctx)
 	if err != nil {
 		return nil, err
 	}

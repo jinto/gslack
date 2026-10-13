@@ -4,14 +4,26 @@
 //	GSLACK_TOKEN=xoxp-… go run . burst C123      # 0.2 history limit=200 × 16회/분
 //	GSLACK_TOKEN=xoxp-… go run . unread          # 0.6 last_read / unread_count 확인
 //	GSLACK_TOKEN=xoxp-… GSLACK_APP_TOKEN=xapp-… go run . watch   # 0.4 Socket Mode
+//
+// B 경로: GSLACK_TOKEN=xoxc-… GSLACK_COOKIE=xoxd-… 를 주면 모든 요청에 d 쿠키를 붙인다.
+//
+//	go run . auth      # 0.3 조회
+//	go run . counts    # 0.8 client.counts(비공식)
+//	go run . rtm       # 0.5 RTM(쿠키 Jar 다이얼러) — 메시지 본문은 찍지 않는다
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
@@ -19,10 +31,11 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: spike auth|burst <channel>|unread|watch")
+		fmt.Fprintln(os.Stderr, "usage: spike auth|burst <channel>|unread|watch|counts|rtm")
 		os.Exit(2)
 	}
-	api := slack.New(mustEnv("GSLACK_TOKEN"), slack.OptionAppLevelToken(os.Getenv("GSLACK_APP_TOKEN")))
+	api := slack.New(mustEnv("GSLACK_TOKEN"), slack.OptionAppLevelToken(os.Getenv("GSLACK_APP_TOKEN")),
+		slack.OptionHTTPClient(&http.Client{Transport: cookieRT{}, Timeout: 30 * time.Second}))
 	me, err := api.AuthTest()
 	check(err)
 	fmt.Printf("auth.test ok: user=%s(%s) team=%s url=%s\n", me.User, me.UserID, me.Team, me.URL)
@@ -40,6 +53,132 @@ func main() {
 		unread(api)
 	case "watch":
 		watch(api, me.UserID)
+	case "counts":
+		counts(me.URL)
+	case "rtm":
+		rtm(api, me.UserID)
+	}
+}
+
+// d 쿠키(xoxd 값 또는 raw Cookie 헤더). 없으면 아무것도 안 붙인다(xoxp).
+func cookie() string {
+	c := strings.TrimSpace(os.Getenv("GSLACK_COOKIE"))
+	if strings.HasPrefix(c, "xoxd-") {
+		return "d=" + c
+	}
+	return c
+}
+
+type cookieRT struct{}
+
+func (cookieRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	if c := cookie(); c != "" && strings.HasSuffix(r.URL.Hostname(), "slack.com") {
+		r = r.Clone(r.Context())
+		r.Header.Set("Cookie", c)
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// 0.8: client.counts는 slack-go에 없다 — 직접 POST. 개수만 찍는다.
+func counts(teamURL string) {
+	form := url.Values{"token": {os.Getenv("GSLACK_TOKEN")}}
+	req, _ := http.NewRequest("POST", strings.TrimRight(teamURL, "/")+"/api/client.counts", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	start := time.Now()
+	res, err := (&http.Client{Transport: cookieRT{}, Timeout: 30 * time.Second}).Do(req)
+	check(err)
+	defer res.Body.Close()
+	var body struct {
+		OK       bool   `json:"ok"`
+		Error    string `json:"error"`
+		Channels []struct {
+			ID           string `json:"id"`
+			HasUnreads   bool   `json:"has_unreads"`
+			MentionCount int    `json:"mention_count"`
+		} `json:"channels"`
+		MPIMs []struct {
+			ID           string `json:"id"`
+			HasUnreads   bool   `json:"has_unreads"`
+			MentionCount int    `json:"mention_count"`
+		} `json:"mpims"`
+		IMs []struct {
+			ID           string `json:"id"`
+			HasUnreads   bool   `json:"has_unreads"`
+			MentionCount int    `json:"mention_count"`
+		} `json:"ims"`
+		Threads struct {
+			HasUnreads   bool `json:"has_unreads"`
+			MentionCount int  `json:"mention_count"`
+		} `json:"threads"`
+	}
+	check(json.NewDecoder(res.Body).Decode(&body))
+	fmt.Printf("client.counts ok=%v error=%q %.1fs\n", body.OK, body.Error, time.Since(start).Seconds())
+	tally := func(name string, n int, unread, mention int) {
+		fmt.Printf("  %-8s %4d개  안읽음 %3d  멘션 %3d\n", name, n, unread, mention)
+	}
+	u, m := 0, 0
+	for _, c := range body.Channels {
+		if c.HasUnreads {
+			u++
+		}
+		m += c.MentionCount
+	}
+	tally("channels", len(body.Channels), u, m)
+	u, m = 0, 0
+	for _, c := range body.MPIMs {
+		if c.HasUnreads {
+			u++
+		}
+		m += c.MentionCount
+	}
+	tally("mpims", len(body.MPIMs), u, m)
+	u, m = 0, 0
+	for _, c := range body.IMs {
+		if c.HasUnreads {
+			u++
+		}
+		m += c.MentionCount
+	}
+	tally("ims", len(body.IMs), u, m)
+	fmt.Printf("  threads  안읽음=%v 멘션 %d\n", body.Threads.HasUnreads, body.Threads.MentionCount)
+}
+
+// 0.5: RTM 웹소켓에도 d 쿠키가 필요하다 — Jar(Domain .slack.com)를 다이얼러에.
+func rtm(api *slack.Client, myID string) {
+	jar, _ := cookiejar.New(nil)
+	if c := cookie(); c != "" {
+		var cs []*http.Cookie
+		for _, kv := range strings.Split(c, ";") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(kv), "="); ok {
+				cs = append(cs, &http.Cookie{Name: k, Value: v, Domain: ".slack.com", Path: "/"})
+			}
+		}
+		jar.SetCookies(&url.URL{Scheme: "https", Host: "slack.com"}, cs)
+	}
+	d := *websocket.DefaultDialer
+	d.Jar = jar
+	r := api.NewRTM(slack.RTMOptionDialer(&d))
+	go r.ManageConnection()
+	for ev := range r.IncomingEvents {
+		switch e := ev.Data.(type) {
+		case *slack.ConnectedEvent:
+			fmt.Printf("[rtm] connected #%d\n", e.ConnectionCount)
+			go presence(api, myID)
+		case *slack.ConnectionErrorEvent:
+			fmt.Printf("[rtm] connection error: %v (attempt %d)\n", e.ErrorObj, e.Attempt)
+		case *slack.InvalidAuthEvent:
+			fmt.Println("[rtm] invalid auth")
+			os.Exit(1)
+		case *slack.MessageEvent:
+			who := e.User
+			if who == myID {
+				who = "나"
+			}
+			fmt.Printf("[msg] ch=%s user=%s sub=%q ts=%s 길이=%d\n", e.Channel, who, e.SubType, e.Timestamp, len(e.Text))
+		case *slack.HelloEvent, *slack.LatencyReport:
+		default:
+			fmt.Printf("[evt] %s\n", ev.Type)
+		}
 	}
 }
 

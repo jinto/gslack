@@ -80,14 +80,13 @@ func (a *app) searchCmd() *cobra.Command {
 			if err := s.loadChannels(ctx, false); err != nil {
 				return err
 			}
-			user := func(id string) string { return s.userName(ctx, id) }
 			for i, m := range out {
 				ch := "#" + where[i]
 				if strings.HasPrefix(m.Channel, "D") { // DM은 이름 자리에 상대 ID가 온다
 					ch = "@" + s.userName(ctx, where[i])
 				}
 				fmt.Fprintf(a.out, "%-17s  %s  %s  @%s: %s\n", m.TS, core.Time(m.TS).Local().Format("01/02 15:04"), ch, m.UserName,
-					preview(core.Render(m.Text, user, s.channelName), 80))
+					preview(s.render(ctx, m.Text), 80))
 			}
 			return nil
 		}),

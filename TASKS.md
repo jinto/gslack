@@ -22,10 +22,14 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [ ] 0.7 결과를 PRD §3·§7에 반영하고 명령별 인증 방식·scope 매트릭스를 확정
 
 **B 경로(독립 spike, M0을 막지 않음)**
-- [ ] 0.3 xoxc+d: 쿠키 RoundTripper로 0.2와 같은 호출 + 파일 업로드 1건(R7)
+- [x] 0.3 xoxc+d: 쿠키 RoundTripper로 0.2와 같은 호출 + 파일 업로드 1건(R7)
   ✓ acme 워크스페이스에서 성공(보안 정책 확인 후, R9)
-- [ ] 0.5 실시간 B: `RTMOptionDialer`(쿠키 Jar, Domain `.slack.com`)로 RTM 연결, 메시지 수신(R4)
-- [ ] 0.8 안 읽은 수(B): `client.counts` 응답 확인
+  → 2026-10-13: 사용자 진행 결정. 조회 OK — auth.test, users.conversations 264개, `gslack auth status`(session)·`read` 그대로 동작. **업로드(R7) OK**(허락 후 셀프 DM에 1건, `gslack upload` 그대로 — 2단계 다른 호스트에서도 쿠키 동작) + `download`로 받아 내용 일치. 토큰은 브라우저 DevTools에서 손으로(xoxc: `localStorage.localConfig_v2`, d: 쿠키) — 로그아웃하면 다시
+    실행: `cd spike && GSLACK_TOKEN=$(cat ~/.config/gslack/spike-xoxc) GSLACK_COOKIE=$(cat ~/.config/gslack/spike-xoxd) go run . auth|counts|rtm`
+- [x] 0.5 실시간 B: `RTMOptionDialer`(쿠키 Jar, Domain `.slack.com`)로 RTM 연결, 메시지 수신(R4)
+  → 2026-10-13: 연결 OK(앱·xapp 없이). 약 10분에 DM(폰에서 보낸 내 메시지)·채널 메시지 30건·reaction_added·im_marked·file_change 수신. **Socket Mode와 달리** 가입한 모든 채널 메시지가 다 오고(필터 필수), user_typing이 대부분(140건). R8: RTM 연결은 presence `active, connections=2` — 접속 중으로 보인다. slack-go `unmarshalling_error` 6건(모르는 이벤트 타입, 무시 가능)
+- [x] 0.8 안 읽은 수(B): `client.counts` 응답 확인
+  → 2026-10-13: 한 번에 0.4초 — channels 82·mpims 1·ims 22개의 `has_unreads`·`mention_count`, threads 요약. A(29초/`--all` 약 4분) 대비. 주의: channels는 264개 중 82개만 온다(최근 활동 대화로 보임)
 
 ## M1. 핵심 — 얇은 수직 슬라이스
 > 2026-10-12 M1a(읽기 전용: 1.1~1.9, 1.13) 완료 — PLAN-M1a.md. `read --mark`, profile+method limiter는 M1b로. 1.5의 limiter 미구현(429는 OptionRetryConfig로 처리)
@@ -64,10 +68,11 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
   → 2026-10-12 watch 스파이크 관찰: (1) user event `message.channels`가 **가입하지 않은 공개 채널**(#random)까지 온다 — 가입 대화로 거를 것. (2) 이벤트가 ts 순서가 아니고, 켜기 전 메시지가 늦게 오기도 한다 — event_id dedupe, 출력은 ts 기준. (3) `<!subteam^S…>` 그룹 멘션을 판정하려면 `usergroups:read`(내가 속한 그룹 목록)가 필요 — manifest에 추가함, 앱 재설치 필요. 20분에 이벤트 125개(대부분 봇 알림) — 기본 필터 필요
 - [x] 3.3 `--notify`: `osascript` 알림(멘션/DM)
   → 2026-10-13 M3a(3.2·3.3, A 경로) 완료 — PLAN-M3.md. `--mentions-only`는 기본값으로, 반대는 `--all`. 재연결은 slack-go에 맡김. 라이브: 기본·`--all --json` 스트림 확인, `--notify` 알림 표시는 미확인. 3.1의 RTM(B)은 B spike 후
-- [ ] 3.4 렌더링 고도화(PRD §5 mrkdwn 체크리스트)
+> 2026-10-13 M3b(3.4~3.6) 완료 — PLAN-M3b.md. 라이브(6개 채널 2559줄): 빈 첫 줄·봇 ID·`@subteam` 0건. ANSI 굵게·이모지 변환은 안 함(TUI에서). Homebrew tap은 안 만듦(사용자 결정)
+- [x] 3.4 렌더링 고도화(PRD §5 mrkdwn 체크리스트)
   ✓ 포맷터 테스트
-- [ ] 3.5 셸 자동완성(cobra completion + 캐시 기반 채널/사용자 이름)
-- [ ] 3.6 README(앱 설치법, 두 인증 방식, B는 비공식 표기, xoxc 추출법), goreleaser, Homebrew tap
+- [x] 3.5 셸 자동완성(cobra completion + 캐시 기반 채널/사용자 이름) — 채널은 `#` 없는 맨 이름(eval에서 주석), 네트워크 0회
+- [x] 3.6 README(앱 설치법, 두 인증 방식, B는 비공식 표기), goreleaser(`release.disable` — remote 없음). xoxc 추출법은 B spike 후
 
 ## M4. TUI(별도 기획)
 - [ ] M1~M3 코어를 재사용하는 TUI PRD 작성

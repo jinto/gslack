@@ -26,14 +26,14 @@ type cacheFile[T any] struct {
 	Items     []T       `json:"items"`
 }
 
-// LoadCache는 없거나, TTL이 지났거나, 손상된 캐시를 miss(ok=false)로 본다.
-func LoadCache[T any](c Cache, name string) (items []T, ok bool) {
+// LoadCache는 없거나, maxAge가 지났거나, 손상된 캐시를 miss(ok=false)로 본다. maxAge 0은 만료 없음(자동완성).
+func LoadCache[T any](c Cache, name string, maxAge time.Duration) (items []T, ok bool) {
 	b, err := os.ReadFile(filepath.Join(c.Dir, name+".json"))
 	if err != nil {
 		return nil, false
 	}
 	var f cacheFile[T]
-	if json.Unmarshal(b, &f) != nil || time.Since(f.FetchedAt) > CacheTTL {
+	if json.Unmarshal(b, &f) != nil || maxAge > 0 && time.Since(f.FetchedAt) > maxAge {
 		return nil, false
 	}
 	return f.Items, true

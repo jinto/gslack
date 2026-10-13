@@ -70,7 +70,7 @@ func (a *app) unreadCmd() *cobra.Command {
 				if r.More {
 					n += "+"
 				}
-				text := core.Render(r.Latest.Text, func(id string) string { return s.userName(ctx, id) }, s.channelName)
+				text := s.render(ctx, r.Latest.Text)
 				fmt.Fprintf(a.out, "%-24s %4s  %s @%s: %s\n", name, n, core.Time(r.Latest.TS).Local().Format("01/02 15:04"),
 					r.Latest.UserName, preview(text, 60))
 			}

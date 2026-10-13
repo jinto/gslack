@@ -52,21 +52,24 @@ func TestFileSecretsAndConfig(t *testing.T) {
 
 func TestCache(t *testing.T) {
 	c := Cache{Dir: t.TempDir()}
-	if _, ok := LoadCache[string](c, "x"); ok {
+	if _, ok := LoadCache[string](c, "x", CacheTTL); ok {
 		t.Fatal("cold cache hit")
 	}
 	SaveCache(c, "x", []string{"a"})
-	if got, ok := LoadCache[string](c, "x"); !ok || got[0] != "a" {
+	if got, ok := LoadCache[string](c, "x", CacheTTL); !ok || got[0] != "a" {
 		t.Fatalf("got %v %v", got, ok)
 	}
 	os.WriteFile(filepath.Join(c.Dir, "x.json"), []byte("{broken"), 0o600)
-	if _, ok := LoadCache[string](c, "x"); ok {
+	if _, ok := LoadCache[string](c, "x", CacheTTL); ok {
 		t.Error("corrupt cache hit")
 	}
 	old := `{"fetched_at":"` + time.Now().Add(-25*time.Hour).Format(time.RFC3339) + `","items":["a"]}`
 	os.WriteFile(filepath.Join(c.Dir, "x.json"), []byte(old), 0o600)
-	if _, ok := LoadCache[string](c, "x"); ok {
+	if _, ok := LoadCache[string](c, "x", CacheTTL); ok {
 		t.Error("expired cache hit")
+	}
+	if _, ok := LoadCache[string](c, "x", 0); !ok {
+		t.Error("maxAge 0인데 만료 처리")
 	}
 }
 
