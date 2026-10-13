@@ -22,7 +22,7 @@ gslack은 **내 계정의 사용자 토큰(xoxp)** 으로 동작한다. 워크�
 
 1. <https://api.slack.com/apps> → **Create New App → From a manifest** → 워크스페이스 고르기 → [`slack-app-manifest.yaml`](slack-app-manifest.yaml) 붙여 넣기.
 2. **Install to Workspace** → *OAuth & Permissions*의 **User OAuth Token**(`xoxp-…`).
-3. (watch를 쓸 때만) *Basic Information → App-Level Tokens*에서 scope `connections:write`로 토큰 생성(`xapp-…`).
+3. (user 프로필로 watch를 쓸 때만) *Basic Information → App-Level Tokens*에서 scope `connections:write`로 토큰 생성(`xapp-…`).
 4. **Manage Distribution(공개 배포)은 켜지 않는다.** 내 워크스페이스 전용 앱이다.
 
 ## 로그인
@@ -62,7 +62,7 @@ Slack 데스크톱 앱의 로컬 저장소에서 xoxc 토큰과 `d` 쿠키를 �
 | `search <검색어> [--in --from]` | 검색 |
 | `upload <대상> <파일>`, `download <파일ID \| permalink>` | 파일 |
 | `status [set <글> \| clear]` | 내 상태 |
-| `watch [대상…] [--all] [--notify]` | 실시간(앱 토큰 필요) |
+| `watch [대상…] [--all] [--notify]` | 실시간(user 프로필은 앱 토큰 필요, session 프로필은 RTM으로 없이) |
 
 **대상**: `general`(채널 이름), `#general`, `@이름`, `C…`/`D…` ID, 메시지 permalink. bash에서 `#`은 주석이라 맨 이름을 쓰는 게 편하다.
 모든 명령에 `--json`(정규화된 JSON, watch는 NDJSON). 오류는 종료 코드 1(API)·2(사용법).
@@ -71,7 +71,8 @@ Slack 데스크톱 앱의 로컬 저장소에서 xoxc 토큰과 `d` 쿠키를 �
 
 - 끊긴 동안 온 메시지는 다시 오지 않는다(재연결은 자동) — 빈틈은 `gslack unread`.
 - 실행 중 새로 가입한 채널, 내가 답글만 단 스레드는 잡지 않는다.
-- Socket Mode 연결은 내 접속 상태(presence)를 active로 만들지 않는다.
+- RTM(session)은 실행 중 새로 생긴 그룹 DM을 멘션 없이는 보여 주지 않고, 가입하지 않은 채널의 멘션은 오지 않는다.
+- Socket Mode 연결은 내 접속 상태(presence)를 active로 만들지 않는다. RTM은 연결 중 active로 보였다.
 
 ## 셸 자동완성
 

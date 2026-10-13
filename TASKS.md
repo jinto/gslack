@@ -82,7 +82,9 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
     라이브: `--profile acme-session auth import acme` → `auth status` kind=session → `read '@박제권'` 확인. 실행은 사용자(분류기가 자격 증명 접근을 막아 Claude는 코드만)
 - [x] c.2 `unread`: session(xoxc) 프로필이면 `client.counts` 한 번(0.4초). 264개 중 105개만 오는 범위 차이 확인, 실패 시 A 방식 폴백(R6)
   → 2026-10-13 구현 — PLAN-M3c-c2.md. counts의 `has_unreads`로 대상을 줄인 뒤 기존 info+history로 센다(출력 형식 동일). 응답에 없는 대화는 읽음으로 본다. 실패(HTTP·ok:false·디코드)는 경고 후 A, Ctrl-C는 폴백 안 함. 토큰은 https `*.slack.com`으로만. 라이브 비교(xoxp 11 vs session 9): 채널 9개(비공개 2 포함)·개수 모두 일치. xoxp에만 있는 2개는 둘 다 최신 메시지가 Slackbot `huddle_thread`인 DM — Slack은 안 읽음으로 안 친다(session 쪽이 GUI와 같다). A에서 `huddle_thread`도 거르면 같아진다(미적용)
-- [ ] c.3 (3.1) `watch`에 RTM 소스: xapp 없이 session으로. 모든 채널 메시지가 오므로 기존 `keep` 필터 재사용, 연결 중 presence active
+- [x] c.3 (3.1) `watch`에 RTM 소스: xapp 없이 session으로. 모든 채널 메시지가 오므로 기존 `keep` 필터 재사용, 연결 중 presence active
+  → 2026-10-13 구현 — PLAN-M3c-c3.md. session 프로필이면 RTM(xapp 있어도), 아니면 Socket Mode. RTM 메시지를 `slackevents.MessageEvent`로 바꿔 `keep`·출력(`emit`)을 그대로 쓴다. channel_type은 가입 대화 캐시(+`D` 접두)로 채움. 쿠키 Jar `.slack.com`(spike 그대로), 쿠키 없으면 usage 오류. `InvalidAuthEvent`·ok:false 거절은 종료(slack-go는 인증 오류 외엔 영원히 재시도 — Socket Mode에도 같이 적용). 테스트: 가짜 ws 서버 e2e(필터 5종), 인증 실패·거절·쿠키 없음.
+    **라이브 확인 필요(사용자)**: `--profile acme-session watch` 연결·DM 수신, RTM 스레드 답글에 `parent_user_id`/broadcast에 `root`가 오는지(내 스레드 답글 알림), 데스크톱 앱 끈 상태의 presence
 - [ ] c.4 (0.7) PRD §3·§7에 결과 반영, 명령별 인증·scope 매트릭스
 
 ## M4. TUI(별도 기획)

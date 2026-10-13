@@ -133,7 +133,7 @@ func (a *app) printError(err error) {
 	code, msg := errorCode(err), err.Error()
 	switch code {
 	case "invalid_auth", "token_revoked", "not_authed", "account_inactive":
-		msg += " — 토큰이 만료됐을 수 있다. `gslack auth login --profile <이름>`으로 다시 로그인"
+		msg += " — 토큰이 만료됐을 수 있다. `gslack auth login --profile <이름>`(session은 `gslack auth import`)으로 다시 로그인"
 	}
 	if a.asJSON {
 		enc := json.NewEncoder(a.errw)

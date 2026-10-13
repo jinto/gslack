@@ -25,7 +25,7 @@ func (a *app) authCmd() *cobra.Command {
 입력 순서: 환경 변수 → stdin(파이프면 한 줄씩) → 터미널 프롬프트.
   1. 토큰: GSLACK_TOKEN (xoxp-… 또는 xoxc-…)
   2. 쿠키(xoxc만): GSLACK_COOKIE (xoxd-… 또는 raw Cookie 헤더 "d=…; d-s=…")
-  3. 앱 토큰(선택, watch용): GSLACK_APP_TOKEN (xapp-…)`,
+  3. 앱 토큰(선택, user 프로필의 watch용): GSLACK_APP_TOKEN (xapp-…)`,
 			Args: cobra.NoArgs,
 			RunE: run(a.login),
 		},

@@ -6,11 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 
+	"github.com/gorilla/websocket"
 	"github.com/jinto/gslack/internal/core"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -23,7 +28,8 @@ func (a *app) watchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch [대상…]",
 		Short: "새 메시지를 실시간으로 — 기본은 DM·멘션·내 스레드 답글만",
-		Long: `Socket Mode로 새 메시지를 한 줄씩 출력한다(--json이면 NDJSON). 앱 토큰(xapp-)이 필요하다.
+		Long: `새 메시지를 한 줄씩 출력한다(--json이면 NDJSON). user 프로필은 Socket Mode라 앱 토큰(xapp-)이 필요하고,
+session 프로필(gslack auth import, 또는 GSLACK_TOKEN=xoxc-…와 GSLACK_COOKIE)은 RTM으로 앱 토큰 없이 붙는다(비공식 — Slack이 막으면 깨진다).
 
 기본: DM, 그룹 DM, <@나>, @here/@channel/@everyone, 내가 속한 그룹 멘션, 내가 시작한 스레드의 답글.
 대상을 주면 그 대화의 모든 메시지도, --all이면 가입한 모든 대화의 메시지를 보여 준다.
@@ -32,7 +38,8 @@ func (a *app) watchCmd() *cobra.Command {
 한계:
   - 끊긴 동안 온 메시지는 다시 오지 않는다(재연결은 자동) — 빈틈은 gslack unread로.
   - 실행 중 새로 가입한 채널, 내가 답글만 단 스레드는 잡지 않는다.
-  - Socket Mode 연결은 내 접속 상태(presence)를 active로 만들지 않는다.`,
+  - RTM은 실행 중 새로 생긴 그룹 DM을 멘션 없이는 보여 주지 않고, 가입하지 않은 채널의 멘션은 오지 않는다.
+  - Socket Mode 연결은 내 접속 상태(presence)를 active로 만들지 않는다. RTM은 연결 중 active로 보였다.`,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			if notify && runtime.GOOS != "darwin" {
 				return usagef("--notify는 macOS에서만")
@@ -50,8 +57,13 @@ func (a *app) watchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if s.app == "" {
-				return usagef("watch에는 앱 토큰(xapp-)이 필요하다 — gslack auth login에서 입력하거나 GSLACK_APP_TOKEN")
+			var dialer *websocket.Dialer // session이면 RTM — 앱 설치가 필요 없다
+			if s.prof.Kind == "session" {
+				if dialer, err = rtmDialer(s.cookie); err != nil {
+					return err
+				}
+			} else if s.app == "" {
+				return usagef("watch에는 앱 토큰(xapp-)이 필요하다 — gslack auth login에서 입력하거나 GSLACK_APP_TOKEN(또는 session 프로필: gslack auth import)")
 			}
 			if err := s.loadChannels(ctx, true); err != nil { // 오래 도는 명령이라 캐시를 믿지 않는다
 				return err
@@ -85,7 +97,10 @@ func (a *app) watchCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(a.errw, "watching @%s — %s (Ctrl-C로 끝)\n", s.prof.User, mode)
-			return a.watch(ctx, s, w, notify)
+			if dialer != nil {
+				return a.watchRTM(ctx, s, w, dialer, notify)
+			}
+			return a.watchSocket(ctx, s, w, notify)
 		}),
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "가입한 모든 대화의 모든 메시지")
@@ -93,13 +108,11 @@ func (a *app) watchCmd() *cobra.Command {
 	return cmd
 }
 
-func (a *app) watch(ctx context.Context, s *session, w *watcher, notify bool) error {
+func (a *app) watchSocket(ctx context.Context, s *session, w *watcher, notify bool) error {
 	sm := socketmode.New(s.api)
 	errc := make(chan error, 1)
 	go func() { errc <- sm.RunContext(ctx) }()
 
-	enc := json.NewEncoder(a.out)
-	enc.SetEscapeHTML(false)
 	seen := map[string]bool{} // event_id — 재연결 때 재전송 대비
 	for {
 		var evt socketmode.Event
@@ -117,6 +130,9 @@ func (a *app) watch(ctx context.Context, s *session, w *watcher, notify bool) er
 		case *slack.ConnectionErrorEvent:
 			if errors.Is(d.ErrorObj, context.Canceled) {
 				continue
+			}
+			if err := refused(d.ErrorObj); err != nil {
+				return err
 			}
 			fmt.Fprintf(a.errw, "gslack: 연결 실패 — %s 뒤 다시 시도(%v)\n", d.Backoff, d.ErrorObj)
 		case *socketmode.ConnectedEvent:
@@ -137,34 +153,117 @@ func (a *app) watch(ctx context.Context, s *session, w *watcher, notify bool) er
 				}
 				seen[cb.EventID] = true
 			}
-			e, ok := d.InnerEvent.Data.(*slackevents.MessageEvent)
-			if !ok || e.Message == nil {
-				continue
-			}
-			raw := slack.Message{Msg: *e.Message}
-			show, alert := w.keep(e, cmp.Or(e.Text, fallbackText(raw)))
-			if !show {
-				continue
-			}
-			m := s.message(ctx, raw, e.Channel)
-			where, body := s.where(e, m), preview(withTags(s.render(ctx, m.Text), m), 120)
-			if m.ThreadTS != "" && m.ThreadTS != m.TS {
-				body = "↳ " + body
-			}
-			if a.asJSON {
-				if err := enc.Encode(m); err != nil {
+			if e, ok := d.InnerEvent.Data.(*slackevents.MessageEvent); ok {
+				if err := a.emit(ctx, s, w, e, notify); err != nil {
 					return err
-				}
-			} else {
-				fmt.Fprintf(a.out, "%-17s  %s  %s  @%s: %s\n", m.TS, core.Time(m.TS).Local().Format("01/02 15:04"), where, m.UserName, body)
-			}
-			if notify && alert {
-				if err := notifyFn(where+" @"+m.UserName, body); err != nil {
-					fmt.Fprintln(a.errw, "gslack: 알림 실패:", err)
 				}
 			}
 		}
 	}
+}
+
+// watchRTM은 session(xoxc+d)으로 RTM에 붙는다. 이벤트 채널은 닫히지 않으므로 ctx와 인증 실패로만 끝난다.
+func (a *app) watchRTM(ctx context.Context, s *session, w *watcher, dialer *websocket.Dialer, notify bool) error {
+	r := s.api.NewRTM(slack.RTMOptionDialer(dialer))
+	go r.ManageConnection()
+	kind := make(map[string]string, len(s.chans)) // RTM 메시지에는 channel_type이 없다
+	for _, c := range s.chans {
+		kind[c.ID] = c.Kind
+	}
+	for {
+		var evt slack.RTMEvent
+		select {
+		case <-ctx.Done():
+			// ponytail: 재연결만 멈춘다. rtm.connect·dial은 context가 없어(최대 10초) 기다리지 않는다 — 프로세스가 끝난다
+			go r.Disconnect()
+			return nil
+		case evt = <-r.IncomingEvents:
+		}
+		switch d := evt.Data.(type) {
+		case *slack.ConnectionErrorEvent:
+			if err := refused(d.ErrorObj); err != nil {
+				return err
+			}
+			fmt.Fprintf(a.errw, "gslack: 연결 실패 — %s 뒤 다시 시도(%v)\n", d.Backoff, d.ErrorObj)
+		case *slack.ConnectedEvent:
+			if d.ConnectionCount > 0 {
+				fmt.Fprintln(a.errw, "gslack: 다시 연결됨 — 끊긴 동안의 메시지는 gslack unread로")
+			}
+		case *slack.InvalidAuthEvent: // 이 뒤 slack-go는 조용히 멈춘다
+			return slack.SlackErrorResponse{Err: "invalid_auth"}
+		case *slack.MessageEvent:
+			typ := kind[d.Channel]
+			if typ == "" && strings.HasPrefix(d.Channel, "D") { // 실행 중 새로 열린 DM
+				typ = core.KindIM
+			}
+			e := &slackevents.MessageEvent{Channel: d.Channel, ChannelType: typ, User: d.User, Text: d.Text,
+				SubType: d.SubType, Message: &d.Msg, Root: d.Root}
+			if err := a.emit(ctx, s, w, e, notify); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// refused는 Slack이 연결을 ok:false로 거절한 오류다(RTM 차단·토큰 종류 등). slack-go는 인증 오류 몇 개 말고는
+// 영원히 재시도하므로 여기서 끝낸다. 네트워크·429·5xx와 Slack이 일시적이라 밝힌 코드는 재시도에 맡긴다.
+func refused(err error) error {
+	var se slack.SlackErrorResponse
+	if errors.As(err, &se) && !slices.Contains([]string{"internal_error", "fatal_error", "request_timeout", "service_unavailable"}, se.Err) {
+		return se
+	}
+	return nil
+}
+
+// emit은 걸러서 한 줄(--json이면 NDJSON)을 내고, 나에게 온 것이면 알린다.
+func (a *app) emit(ctx context.Context, s *session, w *watcher, e *slackevents.MessageEvent, notify bool) error {
+	if e.Message == nil {
+		return nil
+	}
+	raw := slack.Message{Msg: *e.Message}
+	show, alert := w.keep(e, cmp.Or(e.Text, fallbackText(raw)))
+	if !show {
+		return nil
+	}
+	m := s.message(ctx, raw, e.Channel)
+	where, body := s.where(e, m), preview(withTags(s.render(ctx, m.Text), m), 120)
+	if m.ThreadTS != "" && m.ThreadTS != m.TS {
+		body = "↳ " + body
+	}
+	if a.asJSON {
+		enc := json.NewEncoder(a.out)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(m); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(a.out, "%-17s  %s  %s  @%s: %s\n", m.TS, core.Time(m.TS).Local().Format("01/02 15:04"), where, m.UserName, body)
+	}
+	if notify && alert {
+		if err := notifyFn(where+" @"+m.UserName, body); err != nil {
+			fmt.Fprintln(a.errw, "gslack: 알림 실패:", err)
+		}
+	}
+	return nil
+}
+
+// rtmDialer는 RTM 웹소켓에 d 쿠키를 싣는다. 웹소켓 호스트(wss-primary.slack.com 등)가 API와 달라
+// Domain .slack.com으로 넣는다(host-only면 안 간다). 쿠키가 없으면 조용한 재연결 루프 대신 바로 오류.
+func rtmDialer(cookie string) (*websocket.Dialer, error) {
+	var cs []*http.Cookie
+	for _, kv := range strings.Split(cookie, ";") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(kv), "="); ok {
+			cs = append(cs, &http.Cookie{Name: k, Value: v, Domain: ".slack.com", Path: "/"})
+		}
+	}
+	if len(cs) == 0 {
+		return nil, usagef("session 프로필에 쿠키가 없다 — gslack auth import(또는 GSLACK_COOKIE)")
+	}
+	jar, _ := cookiejar.New(nil)
+	jar.SetCookies(&url.URL{Scheme: "https", Host: "slack.com"}, cs)
+	d := *websocket.DefaultDialer
+	d.Jar = jar
+	return &d, nil
 }
 
 // notifyFn은 macOS 알림이다. 본문은 argv로 넘겨 AppleScript 소스에 끼우지 않는다(따옴표 주입 없음).

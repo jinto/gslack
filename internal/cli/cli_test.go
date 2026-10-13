@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/jinto/gslack/internal/core"
 	"github.com/jinto/gslack/internal/store"
 	"github.com/slack-go/slack"
@@ -33,8 +35,10 @@ type fakeSlack struct {
 	limitUser bool   // users.list가 계속 429
 	failInfo  bool   // users.info 실패
 	upload    struct{ name, auth, data string }
-	evil      string // 다운로드 리다이렉트가 향할 외부 서버
-	counts    string // client.counts 응답("500"이면 HTTP 500)
+	evil      string   // 다운로드 리다이렉트가 향할 외부 서버
+	counts    string   // client.counts 응답("500"이면 HTTP 500)
+	rtm       []string // /rtm 웹소켓으로 hello 뒤에 보낼 이벤트
+	rtmAuth   string   // rtm.connect 오류 코드
 }
 
 func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +60,21 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		conn, _, _ := w.(http.Hijacker).Hijack()
 		conn.Close()
 		return
+	case r.URL.Path == "/rtm": // slack-go가 Origin: api.slack.com을 보내므로 Origin 검사를 끈다
+		up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for _, m := range append([]string{`{"type":"hello"}`}, f.rtm...) {
+			c.WriteMessage(websocket.TextMessage, []byte(m))
+		}
+		for { // 닫으면 slack-go가 다시 붙어 재전송한다 — 클라이언트가 끊을 때까지 둔다
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
 	case strings.HasPrefix(r.URL.Path, "/dl/"):
 		w.Write([]byte("DATA-" + strings.TrimPrefix(r.URL.Path, "/dl/")))
 		return
@@ -70,6 +89,12 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	var body string
 	switch method {
+	case "rtm.connect":
+		if f.rtmAuth != "" {
+			body = `{"ok":false,"error":"` + f.rtmAuth + `"}`
+		} else {
+			body = `{"ok":true,"url":"ws://` + r.Host + `/rtm","self":{"id":"U0MEMEMEME"}}`
+		}
 	case "auth.test":
 		if f.auth != "" {
 			body = `{"ok":false,"error":"` + f.auth + `"}`
@@ -1107,5 +1132,72 @@ func TestPickTeam(t *testing.T) {
 	// 매칭 없음.
 	if _, err := pickTeam(teams, "zzz"); err == nil {
 		t.Fatal("no match인데 오류 없음")
+	}
+}
+
+// TestWatchRTM: session 프로필은 앱 토큰 없이 RTM으로 붙고, Socket Mode와 같은 필터를 쓴다.
+// DM을 마지막에 보내므로 두 줄(답글, DM)이 나왔으면 앞의 이벤트는 이미 걸러진 것이다.
+func TestWatchRTM(t *testing.T) {
+	f := setup(t)
+	t.Setenv("GSLACK_TOKEN", "xoxc-test")
+	t.Setenv("GSLACK_COOKIE", "xoxd-test")
+	t.Setenv("GSLACK_APP_TOKEN", "")
+	f.rtm = []string{
+		`{"type":"user_typing","channel":"D1DMDMDMDM","user":"U1AAAAAAAA"}`,
+		`{"type":"message","channel":"D1DMDMDMDM","user":"U0MEMEMEME","text":"내 메시지","ts":"1700000101.000000"}`,
+		`{"type":"message","channel":"C9NOTJOIN0","user":"U1AAAAAAAA","text":"미가입","ts":"1700000102.000000"}`,
+		`{"type":"message","subtype":"message_changed","hidden":true,"channel":"D1DMDMDMDM","ts":"1700000103.000000",
+		  "message":{"user":"U1AAAAAAAA","text":"수정","ts":"1700000001.000000"}}`,
+		`{"type":"message","channel":"C1GENERAL0","user":"U1AAAAAAAA","text":"답글","ts":"1700000104.000000",
+		  "thread_ts":"1700000002.000000","parent_user_id":"U0MEMEMEME"}`,
+		`{"type":"message","channel":"D1DMDMDMDM","user":"U1AAAAAAAA","text":"멘션 없는 DM","ts":"1700000105.000000"}`,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // 필터가 깨져 줄이 모자라도 멈추지 않게
+	defer cancel()
+	pr, pw := io.Pipe()
+	var errOut bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		code := Execute(ctx, []string{"watch", "--json"}, strings.NewReader(""), pw, &errOut)
+		pw.Close()
+		done <- code
+	}()
+	sc := bufio.NewScanner(pr)
+	var got []core.Message
+	for len(got) < 2 && sc.Scan() {
+		var m core.Message
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+			t.Fatal(err, sc.Text())
+		}
+		got = append(got, m)
+	}
+	cancel()
+	go io.Copy(io.Discard, pr) // 취소 직전에 쓰는 줄이 막히지 않게
+	if code := <-done; code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if len(got) != 2 || got[0].Text != "답글" || got[1].Text != "멘션 없는 DM" || got[1].Channel != "D1DMDMDMDM" {
+		t.Fatalf("걸러진 결과: %+v", got)
+	}
+	if len(f.reqs["rtm.connect"]) != 1 {
+		t.Errorf("rtm.connect %d회", len(f.reqs["rtm.connect"]))
+	}
+}
+
+func TestWatchRTMInvalidAuth(t *testing.T) {
+	f := setup(t)
+	t.Setenv("GSLACK_TOKEN", "xoxc-test")
+	t.Setenv("GSLACK_COOKIE", "xoxd-test")
+	f.rtmAuth = "invalid_auth"
+	if code, _, e := gslack("watch"); code != 1 || !strings.Contains(e, "auth import") {
+		t.Fatalf("%d %s", code, e)
+	}
+	f.rtmAuth = "not_allowed_token_type" // slack-go는 재시도하지만 바뀌지 않는다 — 끝내야 한다
+	if code, _, e := gslack("watch", "--json"); code != 1 || !strings.Contains(e, `"error":"not_allowed_token_type"`) {
+		t.Fatalf("거절: %d %s", code, e)
+	}
+	t.Setenv("GSLACK_COOKIE", "")
+	if code, _, e := gslack("watch"); code != 2 || !strings.Contains(e, "쿠키") {
+		t.Fatalf("쿠키 없음: %d %s", code, e)
 	}
 }
