@@ -38,7 +38,16 @@ CI처럼 저장소 없이 쓰려면 `GSLACK_TOKEN`(+ `GSLACK_APP_TOKEN`) 환경 
 
 ### 브라우저 세션 토큰(xoxc) — 비공식·미검증
 
-`xoxc-…` 토큰 + `d` 쿠키(`GSLACK_COOKIE`)도 받지만 **Slack 공식 방식이 아니고 아직 검증 전**이다. 회사 워크스페이스라면 먼저 보안 정책을 확인할 것.
+`xoxc-…` 토큰 + `d` 쿠키(`GSLACK_COOKIE`)도 받지만 **Slack 공식 방식이 아니다**. 회사 워크스페이스라면 먼저 보안 정책을 확인할 것.
+
+**macOS: `auth import`로 자동 추출**
+
+```
+gslack auth import                     # Slack 앱에 로그인된 팀이 하나면 바로
+gslack --profile work auth import acme # 여러 개면 [team]으로 고르고, 이름은 --profile로
+```
+
+Slack 데스크톱 앱의 로컬 저장소에서 xoxc 토큰과 `d` 쿠키를 읽어 session 프로필을 만든다(DevTools 손 작업 불필요). 처음 실행 때 Keychain "Slack Safe Storage" 접근 **승인 프롬프트**가 한 번 뜬다. 읽기만 하며 Slack 앱은 건드리지 않는다. **비공식** — Slack 내부 형식에 의존하므로 앱 업데이트로 깨질 수 있다. macOS 전용.
 
 ## 명령
 

@@ -26,12 +26,52 @@ type SecretStore interface {
 	Delete(profile string) error
 }
 
-// NewSecretStore: macOS는 Keychain, 그 외(또는 GSLACK_SECRET_BACKEND=file)는 0600 파일.
+// NewSecretStore: macOS는 Keychain(길면 0600 파일 폴백), 그 외(또는 GSLACK_SECRET_BACKEND=file)는 0600 파일.
 func NewSecretStore() SecretStore {
+	file := FileSecrets{Path: filepath.Join(ConfigDir(), "credentials.json")}
 	if runtime.GOOS == "darwin" && os.Getenv("GSLACK_SECRET_BACKEND") != "file" {
-		return Keychain{Service: "gslack"}
+		return macStore{kc: Keychain{Service: "gslack"}, file: file}
 	}
-	return FileSecrets{Path: filepath.Join(ConfigDir(), "credentials.json")}
+	return file
+}
+
+// macStore: Keychain에 넣되 security CLI의 128B getpass 한계를 넘는 긴 값(xoxc 세션 등)은
+// 0600 파일로 폴백한다. 짧은 xoxp는 Keychain(암호화 at-rest) 그대로.
+type macStore struct {
+	kc   Keychain
+	file FileSecrets
+}
+
+// kcMax: security의 getpass는 128바이트에서 잘린다 — 여유를 두고 그 아래만 Keychain에.
+const kcMax = 120
+
+func (m macStore) Set(profile string, s Secret) error {
+	b, _ := json.Marshal(s)
+	if len(b) > kcMax { // 길면 파일로, Keychain 잔여 제거
+		if err := m.kc.Delete(profile); err != nil {
+			return err
+		}
+		return m.file.Set(profile, s)
+	}
+	if err := m.file.Delete(profile); err != nil { // 짧으면 Keychain으로, 파일 잔여 제거
+		return err
+	}
+	return m.kc.Set(profile, s)
+}
+
+func (m macStore) Get(profile string) (Secret, error) {
+	s, err := m.kc.Get(profile)
+	if errors.Is(err, ErrNoSecret) {
+		return m.file.Get(profile)
+	}
+	return s, err
+}
+
+func (m macStore) Delete(profile string) error {
+	if err := m.kc.Delete(profile); err != nil {
+		return err
+	}
+	return m.file.Delete(profile)
 }
 
 // Keychain은 `security` CLI를 쓴다. 값은 argv가 아니라 stdin으로 넘긴다:
@@ -49,6 +89,7 @@ func (k Keychain) Set(profile string, s Secret) error {
 	}
 	cmd := exec.Command("security", "add-generic-password", "-U", "-s", k.Service, "-a", profile, "-w")
 	cmd.Stdin = strings.NewReader(v + "\n" + v + "\n")
+	detachTTY(cmd) // tty가 있으면 security가 stdin 대신 tty에서 읽어 빈 값이 저장된다
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("keychain 저장 실패: %v: %s", err, bytes.TrimSpace(out))
 	}

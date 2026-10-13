@@ -76,7 +76,10 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 
 ## M3c. B 경로 활용(다음 작업 — 이 순서로)
 > 2026-10-13 B spike(0.3·0.5·0.8) 통과 후 사용자와 정한 순서. 각 항목은 work pipeline(PLAN → 리뷰 → 구현 → 리뷰 → ponytail)으로
-- [ ] c.1 `gslack auth import`: Slack 데스크톱 앱 로컬 저장소에서 xoxc(LevelDB `localConfig_v2`) + `d` 쿠키(Cookies sqlite, Keychain "Slack Safe Storage"로 복호화)를 읽어 프로필 생성 — DevTools 손 작업 제거. 비공식이라 Slack 업데이트로 깨질 수 있음을 help에
+- [x] c.1 `gslack auth import`: Slack 데스크톱 앱 로컬 저장소에서 xoxc(LevelDB `localConfig_v2`) + `d` 쿠키(Cookies sqlite, Keychain "Slack Safe Storage"로 복호화)를 읽어 프로필 생성 — DevTools 손 작업 제거. 비공식이라 Slack 업데이트로 깨질 수 있음을 help에
+  → 2026-10-13 완료 — PLAN-M3c-c1.md. 복호화·파싱은 플랫폼 중립(stdlib `crypto/pbkdf2`, CI 테스트), Keychain·경로·leveldb·sqlite는 `_darwin`. 의존성은 goleveldb 1개(sqlite는 시스템 `sqlite3`, pbkdf2는 stdlib). 팀 여러 개면 `[team]`으로 고름(후보 나열).
+    **버그 2개 발견·수정**(`Keychain.Set` 루트): (1) `security -w` 빈 값이 tty의 getpass를 읽어 stdin 무시 → `setsid`로 tty 떼어 해결. (2) getpass 128B 한계로 session 비밀값(xoxc+쿠키) 잘림 → macOS는 짧은 xoxp만 Keychain, **120B 넘으면 0600 파일 폴백**(`macStore`가 길이로 라우팅, 전환 시 반대쪽 정리). at-rest 암호화를 session에 한해 완화(사용자 결정 2026-10-13, FileVault가 커버). login에도 적용되는 수정.
+    라이브: `--profile acme-session auth import acme` → `auth status` kind=session → `read '@박제권'` 확인. 실행은 사용자(분류기가 자격 증명 접근을 막아 Claude는 코드만)
 - [ ] c.2 `unread`: session(xoxc) 프로필이면 `client.counts` 한 번(0.4초). 264개 중 105개만 오는 범위 차이 확인, 실패 시 A 방식 폴백(R6)
 - [ ] c.3 (3.1) `watch`에 RTM 소스: xapp 없이 session으로. 모든 채널 메시지가 오므로 기존 `keep` 필터 재사용, 연결 중 presence active
 - [ ] c.4 (0.7) PRD §3·§7에 결과 반영, 명령별 인증·scope 매트릭스

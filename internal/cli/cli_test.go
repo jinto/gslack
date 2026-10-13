@@ -1047,3 +1047,30 @@ func TestCompletion(t *testing.T) {
 		t.Errorf("완성이 API를 불렀다: %v", f.reqs)
 	}
 }
+
+func TestPickTeam(t *testing.T) {
+	teams := []store.SlackTeam{
+		{Name: "Acme", URL: "https://acme.slack.com/", Token: "xoxc-1"},
+		{Name: "Other Co", URL: "https://otherco.slack.com/", Token: "xoxc-2"},
+	}
+	// 유일하면 selector 없이 선택.
+	if got, err := pickTeam(teams[:1], ""); err != nil || got.Token != "xoxc-1" {
+		t.Fatalf("single: %+v err %v", got, err)
+	}
+	// 여러 개 + selector 없음 → 오류(후보 나열).
+	if _, err := pickTeam(teams, ""); err == nil {
+		t.Fatal("ambiguous인데 오류 없음")
+	}
+	// 호스트 접두사 매칭.
+	if got, err := pickTeam(teams, "acm"); err != nil || got.Token != "xoxc-1" {
+		t.Fatalf("prefix: %+v err %v", got, err)
+	}
+	// 이름 부분 매칭.
+	if got, err := pickTeam(teams, "other co"); err != nil || got.Token != "xoxc-2" {
+		t.Fatalf("name: %+v err %v", got, err)
+	}
+	// 매칭 없음.
+	if _, err := pickTeam(teams, "zzz"); err == nil {
+		t.Fatal("no match인데 오류 없음")
+	}
+}

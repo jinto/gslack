@@ -31,8 +31,11 @@ func (a *app) addCompletions(root *cobra.Command) {
 			c.RegisterFlagCompletionFunc("from", a.completeUsers)
 		case "auth":
 			for _, sub := range c.Commands() {
-				if sub.Name() == "use" || sub.Name() == "logout" {
+				switch sub.Name() {
+				case "use", "logout":
 					sub.ValidArgsFunction = firstArg(a.completeProfiles, cobra.ShellCompDirectiveNoFileComp)
+				default: // import의 [team]은 Slack 앱에서만 온다 — 파일 완성만 끈다
+					sub.ValidArgsFunction = cobra.NoFileCompletions
 				}
 			}
 		default: // 파일을 받는 명령이 아니다
