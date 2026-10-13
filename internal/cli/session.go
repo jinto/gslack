@@ -25,7 +25,9 @@ type session struct {
 	files   *slack.Client // 파일 업로드·다운로드: 전체 제한 없음(큰 파일), Ctrl-C로 끊는다
 	cache   store.Cache
 	refresh bool
-	app     string // xapp-(watch용, 없을 수 있다) — api에 이미 실려 있다
+	app     string       // xapp-(watch용, 없을 수 있다) — api에 이미 실려 있다
+	token   string       // slack-go에 없는 메서드(client.counts)를 직접 부를 때
+	httpc   *http.Client // 그때 쓰는 클라이언트 — api와 같은 설정(쿠키·30초)
 
 	users      map[string]core.User // id → user
 	usersFresh bool
@@ -46,12 +48,7 @@ func (s *session) render(ctx context.Context, text string) string {
 // newAPI는 클라이언트를 만든다. timeout 0이면 요청 전체 제한이 없고(파일 전송용),
 // 응답 헤더까지 30초(요청 본문을 다 보낸 뒤부터)와 Ctrl-C(context)로만 끊는다.
 func newAPI(token, cookie string, timeout time.Duration, extra ...slack.Option) *slack.Client {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.ResponseHeaderTimeout = 30 * time.Second
-	hc := &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: checkRedirect}
-	if cookie != "" {
-		hc.Transport = cookieTransport{cookie: cookie, next: tr}
-	}
+	hc := newHTTP(cookie, timeout)
 	rc := slack.DefaultRetryConfig()
 	rc.RetryAfterDuration = 5 * time.Second                                         // Retry-After가 없을 때 기본 60s 멈춤 방지
 	opts := []slack.Option{slack.OptionHTTPClient(hc), slack.OptionRetryConfig(rc)} // 429만 재시도
@@ -59,6 +56,16 @@ func newAPI(token, cookie string, timeout time.Duration, extra ...slack.Option) 
 		opts = append(opts, slack.OptionAPIURL(apiURL))
 	}
 	return slack.New(token, append(opts, extra...)...)
+}
+
+func newHTTP(cookie string, timeout time.Duration) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 30 * time.Second
+	hc := &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: checkRedirect}
+	if cookie != "" {
+		hc.Transport = cookieTransport{cookie: cookie, next: tr}
+	}
+	return hc
 }
 
 var apiURL string // 테스트에서 가짜 서버로 바꾼다
@@ -130,6 +137,7 @@ func (a *app) open(ctx context.Context) (*session, error) {
 			return nil, err
 		}
 		return &session{name: "env", prof: profileFrom(res, tok), api: api, files: newAPI(tok, cookie, 0), app: app,
+			token: tok, httpc: newHTTP(cookie, apiTimeout),
 			cache: store.OpenCache("env-" + res.TeamID + "-" + res.UserID), refresh: a.refresh}, nil
 	}
 	cfg, err := store.LoadConfig()
@@ -155,7 +163,8 @@ func (a *app) open(ctx context.Context) (*session, error) {
 		return nil, err
 	}
 	return &session{name: name, prof: prof, api: newAPI(sec.Token, sec.Cookie, apiTimeout, slack.OptionAppLevelToken(sec.AppToken)),
-		files: newAPI(sec.Token, sec.Cookie, 0), app: sec.AppToken, cache: store.OpenCache(name), refresh: a.refresh}, nil
+		files: newAPI(sec.Token, sec.Cookie, 0), app: sec.AppToken,
+		token: sec.Token, httpc: newHTTP(sec.Cookie, apiTimeout), cache: store.OpenCache(name), refresh: a.refresh}, nil
 }
 
 func profileFrom(res *slack.AuthTestResponse, token string) store.Profile {

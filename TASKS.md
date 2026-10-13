@@ -80,7 +80,8 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
   → 2026-10-13 완료 — PLAN-M3c-c1.md. 복호화·파싱은 플랫폼 중립(stdlib `crypto/pbkdf2`, CI 테스트), Keychain·경로·leveldb·sqlite는 `_darwin`. 의존성은 goleveldb 1개(sqlite는 시스템 `sqlite3`, pbkdf2는 stdlib). 팀 여러 개면 `[team]`으로 고름(후보 나열).
     **버그 2개 발견·수정**(`Keychain.Set` 루트): (1) `security -w` 빈 값이 tty의 getpass를 읽어 stdin 무시 → `setsid`로 tty 떼어 해결. (2) getpass 128B 한계로 session 비밀값(xoxc+쿠키) 잘림 → macOS는 짧은 xoxp만 Keychain, **120B 넘으면 0600 파일 폴백**(`macStore`가 길이로 라우팅, 전환 시 반대쪽 정리). at-rest 암호화를 session에 한해 완화(사용자 결정 2026-10-13, FileVault가 커버). login에도 적용되는 수정.
     라이브: `--profile acme-session auth import acme` → `auth status` kind=session → `read '@박제권'` 확인. 실행은 사용자(분류기가 자격 증명 접근을 막아 Claude는 코드만)
-- [ ] c.2 `unread`: session(xoxc) 프로필이면 `client.counts` 한 번(0.4초). 264개 중 105개만 오는 범위 차이 확인, 실패 시 A 방식 폴백(R6)
+- [x] c.2 `unread`: session(xoxc) 프로필이면 `client.counts` 한 번(0.4초). 264개 중 105개만 오는 범위 차이 확인, 실패 시 A 방식 폴백(R6)
+  → 2026-10-13 구현 — PLAN-M3c-c2.md. counts의 `has_unreads`로 대상을 줄인 뒤 기존 info+history로 센다(출력 형식 동일). 응답에 없는 대화는 읽음으로 본다. 실패(HTTP·ok:false·디코드)는 경고 후 A, Ctrl-C는 폴백 안 함. 토큰은 https `*.slack.com`으로만. 라이브 비교(xoxp 11 vs session 9): 채널 9개(비공개 2 포함)·개수 모두 일치. xoxp에만 있는 2개는 둘 다 최신 메시지가 Slackbot `huddle_thread`인 DM — Slack은 안 읽음으로 안 친다(session 쪽이 GUI와 같다). A에서 `huddle_thread`도 거르면 같아진다(미적용)
 - [ ] c.3 (3.1) `watch`에 RTM 소스: xapp 없이 session으로. 모든 채널 메시지가 오므로 기존 `keep` 필터 재사용, 연결 중 presence active
 - [ ] c.4 (0.7) PRD §3·§7에 결과 반영, 명령별 인증·scope 매트릭스
 

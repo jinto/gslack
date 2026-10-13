@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ type fakeSlack struct {
 	failInfo  bool   // users.info 실패
 	upload    struct{ name, auth, data string }
 	evil      string // 다운로드 리다이렉트가 향할 외부 서버
+	counts    string // client.counts 응답("500"이면 HTTP 500)
 }
 
 func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +140,12 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = `{"ok":true,"channel":"` + r.Form.Get("channel") + `","ts":"1700000099.000000","message":` + string(m) + `}`
 	case "users.getPresence":
 		body = `{"ok":true,"presence":"active"}`
+	case "client.counts":
+		if f.counts == "500" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		body = f.counts
 	case "files.getUploadURLExternal":
 		body = `{"ok":true,"upload_url":"http://` + r.Host + `/upload/F1","file_id":"F1FILEFILE"}`
 	case "files.completeUploadExternal":
@@ -634,6 +642,33 @@ func TestUnread(t *testing.T) {
 	}
 	if code, _, _ := gslack("unread", "--all", "--type", "im"); code != 2 {
 		t.Errorf("--all --type: %d", code)
+	}
+}
+
+func TestUnreadClientCounts(t *testing.T) {
+	f := setup(t)
+	t.Setenv("GSLACK_TOKEN", "xoxc-test") // session
+	f.counts = `{"ok":true,"channels":[{"id":"C1GENERAL0","has_unreads":true},{"id":"G1NEVERREAD","has_unreads":false}],
+		"ims":[{"id":"D3UNREADDM","has_unreads":true}],"mpims":[]}`
+	code, out, errOut := gslack("unread", "--all", "--json")
+	var info []string
+	for _, r := range f.reqs["conversations.info"] {
+		info = append(info, r.Get("channel"))
+	}
+	slices.Sort(info)
+	if code != 0 || errOut != "" || strings.Join(info, ",") != "C1GENERAL0,D3UNREADDM" || !strings.Contains(out, "D3UNREADDM") {
+		t.Errorf("counts: %d %q info=%v", code, errOut, info)
+	}
+	if c := f.reqs["client.counts"]; len(c) != 1 || c[0].Get("token") != "xoxc-test" {
+		t.Errorf("client.counts 요청: %v", c)
+	}
+	// 실패하면 경고하고 전부 훑는다
+	for _, bad := range []string{`{"ok":false,"error":"unknown_method"}`, "500", "{"} {
+		f.counts, f.reqs["conversations.info"] = bad, nil
+		code, _, errOut := gslack("unread", "--all", "--json")
+		if code != 0 || !strings.Contains(errOut, "client.counts 실패") || len(f.reqs["conversations.info"]) < 4 {
+			t.Errorf("%s 폴백: %d %q %d", bad, code, errOut, len(f.reqs["conversations.info"]))
+		}
 	}
 }
 

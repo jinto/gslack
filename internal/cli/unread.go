@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -26,7 +30,9 @@ func (a *app) unreadCmd() *cobra.Command {
 		Long: `기본은 DM(im, mpim)만 본다. --all이나 --type으로 채널까지 넓힌다.
 대화마다 conversations.info(+ history)를 불러서 느리다 — 대화가 수백 개면 DM만 수십 초, 전체는 몇 분(Slack 호출 한도).
 본인 메시지와 입장/퇴장은 세지 않는다. 스레드 답글과 뮤트 채널은 구분하지 않는다.
-한 번도 읽지 않은 채널은 대개 100+로 나온다.`,
+한 번도 읽지 않은 채널은 대개 100+로 나온다.
+session(xoxc) 프로필은 비공식 client.counts 한 번으로 안 읽은 대화만 골라 빠르다. 다만 Slack이 최근 활동
+대화만 돌려줘서 오래 조용한 채널은 빠진다. client.counts가 실패하면 위의 느린 방식으로.`,
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			if all && len(types) > 0 {
@@ -39,6 +45,17 @@ func (a *app) unreadCmd() *cobra.Command {
 			s, chans, err := a.channels(ctx, types)
 			if err != nil {
 				return err
+			}
+			if s.prof.Kind == "session" {
+				ids, err := s.clientCounts(ctx)
+				switch {
+				case ctx.Err() != nil:
+					return ctx.Err()
+				case err != nil:
+					fmt.Fprintf(a.errw, "client.counts 실패(%v) — 대화마다 확인한다(느림)\n", err)
+				default:
+					chans = slices.DeleteFunc(chans, func(c core.Channel) bool { return !ids[c.ID] })
+				}
 			}
 			items, err := a.scanUnread(ctx, s, chans)
 			if err != nil {
@@ -167,6 +184,49 @@ func (s *session) unreadOne(ctx context.Context, c core.Channel) (*unreadItem, e
 		return nil, nil
 	}
 	return it, nil
+}
+
+// clientCounts는 비공식 client.counts로 안 읽은 대화 ID를 받는다(session 토큰만). 응답에 없는 대화는 읽음으로 본다.
+func (s *session) clientCounts(ctx context.Context) (map[string]bool, error) {
+	base := cmp.Or(apiURL, strings.TrimRight(s.prof.URL, "/")+"/api/")
+	req, err := http.NewRequestWithContext(ctx, "POST", base+"client.counts", strings.NewReader(url.Values{"token": {s.token}}.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	if apiURL == "" && !isSlackURL(req.URL) {
+		return nil, fmt.Errorf("Slack 주소가 아니다: %q", s.prof.URL) // 토큰을 실어 보내므로
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := s.httpc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", res.StatusCode)
+	}
+	type entry struct {
+		ID         string `json:"id"`
+		HasUnreads bool   `json:"has_unreads"`
+	}
+	var body struct {
+		OK                   bool
+		Error                string
+		Channels, MPIMs, IMs []entry
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	if !body.OK {
+		return nil, errors.New(cmp.Or(body.Error, "ok=false"))
+	}
+	ids := map[string]bool{}
+	for _, e := range slices.Concat(body.Channels, body.MPIMs, body.IMs) {
+		if e.HasUnreads {
+			ids[e.ID] = true
+		}
+	}
+	return ids, nil
 }
 
 // waitRateLimit은 slack-go의 재시도(3회)가 끝난 뒤에도 429면 Retry-After만큼 기다렸다 다시 부른다.
