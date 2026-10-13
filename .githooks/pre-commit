@@ -6,7 +6,10 @@ export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$(go env GOPATH 2>/dev/null)
 
 echo "🔎 gitleaks: 스테이징된 변경에 토큰이 있는지…"
 command -v gitleaks >/dev/null || { echo "❌ gitleaks가 없다 — brew install gitleaks"; exit 1; }
-gitleaks git --staged --no-banner --redact
+# 공개 금지 단어(회사·동료 이름 등)는 저장소 밖 규칙으로 — 있으면 기본 규칙에 더한다
+cfg=()
+[ -f .gitleaks.local.toml ] && cfg=(--config .gitleaks.local.toml)
+gitleaks git --staged --no-banner --redact "${cfg[@]}"
 
 echo "🧹 gofmt·go vet·go mod tidy…"
 bad=$(gofmt -l $(git ls-files '*.go'))
