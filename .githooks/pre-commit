@@ -1,0 +1,18 @@
+#!/bin/bash
+# 설치: git config core.hooksPath .githooks
+set -e
+# GUI git 클라이언트는 로그인 셸 PATH가 없다
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$(go env GOPATH 2>/dev/null)/bin"
+
+echo "🔎 gitleaks: 스테이징된 변경에 토큰이 있는지…"
+command -v gitleaks >/dev/null || { echo "❌ gitleaks가 없다 — brew install gitleaks"; exit 1; }
+gitleaks git --staged --no-banner --redact
+
+echo "🧹 gofmt·go vet·go mod tidy…"
+bad=$(gofmt -l $(git ls-files '*.go'))
+[ -z "$bad" ] || { echo "❌ gofmt 필요:"; echo "$bad"; exit 1; }
+go vet ./...
+go mod tidy -diff >/dev/null || { echo "❌ go mod tidy 필요"; exit 1; }
+
+echo "🧪 go test…"
+go test ./...

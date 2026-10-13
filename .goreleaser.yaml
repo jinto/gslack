@@ -1,5 +1,5 @@
 version: 2
-# 릴리스 업로드 대상(remote)이 아직 없다 — 바이너리만 dist/에 만든다: goreleaser release --snapshot --clean
+# 태그(v*) push → .github/workflows/release.yml이 GitHub Releases에 올린다. 로컬 확인: goreleaser release --snapshot --clean
 builds:
   - env: [CGO_ENABLED=0]
     goos: [darwin, linux]
@@ -8,5 +8,3 @@ builds:
     ldflags: ["-s -w -X github.com/jinto/gslack/internal/cli.Version={{.Version}}"]
 archives:
   - formats: [tar.gz]
-release:
-  disable: true

@@ -13,8 +13,10 @@ gslack watch --notify               # DM·멘션이 오면 한 줄 + macOS 알�
 ## 설치
 
 ```sh
-git clone <저장소> && cd gslack && go build -o gslack .   # Go 1.26+ (공개 저장소 전 — go install은 아직 안 된다)
+go install github.com/jinto/gslack@latest   # Go 1.26+
 ```
+
+또는 [Releases](https://github.com/jinto/gslack/releases)에서 macOS·Linux 바이너리(amd64·arm64). 브라우저로 받은 macOS 바이너리는 서명이 없어 Gatekeeper가 막는다 — `xattr -d com.apple.quarantine gslack`.
 
 ## Slack 앱 만들기(한 번)
 
@@ -82,9 +84,16 @@ source <(gslack completion zsh)    # bash·fish·powershell도. 영구 설치는
 
 채널 이름·`@사용자`·프로필을 완성한다. 네트워크를 쓰지 않고 이름 캐시(`~/.cache/gslack/<프로필>/`)만 읽는다 — 아무 명령이나 한 번 실행하면 채워진다. `GSLACK_TOKEN` 환경 변수 모드에서는 완성하지 않는다.
 
-## 빌드
+## 개발
 
 ```sh
+git config core.hooksPath .githooks       # pre-commit: gitleaks(토큰 유출) · gofmt · go vet · go mod tidy · go test
 go test ./...
 goreleaser release --snapshot --clean    # darwin/linux × amd64/arm64 → dist/
 ```
+
+릴리스는 `v*` 태그를 push하면 GitHub Actions가 goreleaser로 올린다. 기획·계획 문서는 [`docs/`](docs/)(PRD, TASKS, `plans/`, 버리는 `spike/`).
+
+## 라이선스
+
+MIT — [LICENSE](LICENSE).

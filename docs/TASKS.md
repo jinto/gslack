@@ -16,7 +16,7 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
   → 2026-10-12 부분 완료: xapp 발급, Socket Mode 연결 OK, DM(`message.im`) 이벤트 수신·ack OK(event_id 포함).
   → 2026-10-12 오후(4시간 연속): **채널 멘션 이벤트 수신 OK**(17:04 #dev `<@나>`), **자기 메시지 필터 OK**, 그룹 멘션 `<!subteam^…>` 수신(소속 판정은 usergroups:read 필요). 내 edit/delete는 `message_changed`/`message_deleted`(user 비어 있음)로 와서 자기 필터를 통과한다 — M3에서 subtype으로 거를 것. **재연결 OK**: 연결 약 5시간 뒤(20:45) Slack이 끊자 slack-go socketmode가 스스로 다시 붙었다(connecting → connected, 이벤트 계속). R8 관찰: 재연결 직후 presence `away, auto_away=true` — Socket Mode 연결은 사용자를 active로 만들지 않는다(앱 연결은 프레즌스에 영향 없음). 데스크톱 앱을 끈 상태 비교는 미확인
   → 2026-10-13(24시간 연속): **완료.** 재연결 16회 모두 자동, 프로세스 재시작 0. R8: 데스크톱 앱 연결이 끊긴 07:05 이후 Socket Mode만 연결된 상태에서 presence `away, connections=0` — Socket Mode는 프레즌스에 안 잡힌다. 앱 재설치(`usergroups:read`, 토큰 그대로) 후 `usergroups.list?include_users=true`로 내 그룹 5개 확인 → 그룹 멘션 판정 가능
-    실행: `cd spike && GSLACK_TOKEN=$(cat ~/.config/gslack/spike-xoxp) GSLACK_APP_TOKEN=$(cat ~/.config/gslack/spike-xapp) go run . watch`
+    실행: `cd docs/spike && GSLACK_TOKEN=$(cat ~/.config/gslack/spike-xoxp) GSLACK_APP_TOKEN=$(cat ~/.config/gslack/spike-xapp) go run . watch`
 - [x] 0.6 안 읽은 수(A): 채널에 `conversations.info`의 `last_read`가 오는지, DM의 `unread_count` 확인(R2)
   → 2026-10-12: public/group/mpim/im 모두 `last_read`가 온다. `unread_count`는 전부 0 — 비공개 채널 1곳은 last_read 이후 메시지가 1건 있는데도 0이었다. 따라서 `unread_count`는 쓰지 않고, 대화마다 `conversations.history(oldest=last_read)`로 센다(대화당 info+history 2회 호출 → `unread`는 최근 활동 대화로 범위를 줄이거나 느린 명령으로 둔다). DM의 `unread_count` 동작은 안 읽은 DM이 없어서 미확인
 - [x] 0.7 결과를 PRD §3·§7에 반영하고 명령별 인증 방식·scope 매트릭스를 확정
@@ -26,7 +26,7 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [x] 0.3 xoxc+d: 쿠키 RoundTripper로 0.2와 같은 호출 + 파일 업로드 1건(R7)
   ✓ acme 워크스페이스에서 성공(보안 정책 확인 후, R9)
   → 2026-10-13: 사용자 진행 결정. 조회 OK — auth.test, users.conversations 264개, `gslack auth status`(session)·`read` 그대로 동작. **업로드(R7) OK**(허락 후 셀프 DM에 1건, `gslack upload` 그대로 — 2단계 다른 호스트에서도 쿠키 동작) + `download`로 받아 내용 일치. 토큰은 브라우저 DevTools에서 손으로(xoxc: `localStorage.localConfig_v2`, d: 쿠키) — 로그아웃하면 다시
-    실행: `cd spike && GSLACK_TOKEN=$(cat ~/.config/gslack/spike-xoxc) GSLACK_COOKIE=$(cat ~/.config/gslack/spike-xoxd) go run . auth|counts|rtm`
+    실행: `cd docs/spike && GSLACK_TOKEN=$(cat ~/.config/gslack/spike-xoxc) GSLACK_COOKIE=$(cat ~/.config/gslack/spike-xoxd) go run . auth|counts|rtm`
 - [x] 0.5 실시간 B: `RTMOptionDialer`(쿠키 Jar, Domain `.slack.com`)로 RTM 연결, 메시지 수신(R4)
   → 2026-10-13: 연결 OK(앱·xapp 없이). 약 10분에 DM(폰에서 보낸 내 메시지)·채널 메시지 30건·reaction_added·im_marked·file_change 수신. **Socket Mode와 달리** 가입한 모든 채널 메시지가 다 오고(필터 필수), user_typing이 대부분(140건). R8: RTM 연결은 presence `active, connections=2` — 접속 중으로 보인다. slack-go `unmarshalling_error` 6건(모르는 이벤트 타입, 무시 가능)
 - [x] 0.8 안 읽은 수(B): `client.counts` 응답 확인
