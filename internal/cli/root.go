@@ -69,7 +69,7 @@ func (a *app) rootCmd() *cobra.Command {
 	root.AddCommand(a.authCmd(), a.channelsCmd(), a.usersCmd(), a.whoisCmd(), a.readCmd(),
 		a.threadCmd(), a.sendCmd(), a.markCmd(), a.unreadCmd(),
 		a.searchCmd(), a.reactCmd(), a.editCmd(), a.deleteCmd(), a.statusCmd(),
-		a.uploadCmd(), a.downloadCmd(), a.watchCmd())
+		a.uploadCmd(), a.downloadCmd(), a.watchCmd(), a.tuiCmd())
 	a.addCompletions(root)
 	return root
 }

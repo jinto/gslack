@@ -46,18 +46,7 @@ session(xoxc) 프로필은 비공식 client.counts 한 번으로 안 읽은 대�
 			if err != nil {
 				return err
 			}
-			if s.prof.Kind == "session" {
-				ids, err := s.clientCounts(ctx)
-				switch {
-				case ctx.Err() != nil:
-					return ctx.Err()
-				case err != nil:
-					fmt.Fprintf(a.errw, "client.counts 실패(%v) — 대화마다 확인한다(느림)\n", err)
-				default:
-					chans = slices.DeleteFunc(chans, func(c core.Channel) bool { return !ids[c.ID] })
-				}
-			}
-			items, err := a.scanUnread(ctx, s, chans)
+			items, err := a.unreadRows(ctx, s, chans)
 			if err != nil {
 				return err
 			}
@@ -69,12 +58,8 @@ session(xoxc) 프로필은 비공식 client.counts 한 번으로 안 읽은 대�
 			}
 			out := []row{}
 			for _, it := range items {
-				if it == nil {
-					continue
-				}
 				out = append(out, row{it.ch, it.count, it.more, s.message(ctx, it.latest, it.ch.ID)})
 			}
-			slices.SortFunc(out, func(x, y row) int { return strings.Compare(y.Latest.TS, x.Latest.TS) })
 			if a.asJSON {
 				return a.printJSON(out)
 			}
@@ -104,6 +89,29 @@ type unreadItem struct {
 	count  int
 	more   bool
 	latest slack.Message
+}
+
+// unreadRows는 안 읽은 대화를 최신순으로 돌려준다. session은 client.counts로 대상을 줄이고, 실패하면 경고 뒤 전부 훑는다.
+// 이름 해석(session 캐시)은 하지 않는다 — tui가 Cmd 고루틴에서 부른다.
+func (a *app) unreadRows(ctx context.Context, s *session, chans []core.Channel) ([]*unreadItem, error) {
+	if s.prof.Kind == "session" {
+		ids, err := s.clientCounts(ctx)
+		switch {
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		case err != nil:
+			fmt.Fprintf(a.errw, "client.counts 실패(%v) — 대화마다 확인한다(느림)\n", err)
+		default:
+			chans = slices.DeleteFunc(slices.Clone(chans), func(c core.Channel) bool { return !ids[c.ID] }) // tui가 chans를 다시 쓴다
+		}
+	}
+	items, err := a.scanUnread(ctx, s, chans)
+	if err != nil {
+		return nil, err
+	}
+	items = slices.DeleteFunc(items, func(it *unreadItem) bool { return it == nil })
+	slices.SortFunc(items, func(x, y *unreadItem) int { return strings.Compare(y.latest.Timestamp, x.latest.Timestamp) })
+	return items, nil
 }
 
 // scanUnread는 대화를 동시 8개로 훑는다. 첫 오류에서 나머지를 취소한다.

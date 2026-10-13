@@ -113,32 +113,41 @@ func (a *app) threadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p := &slack.GetConversationRepliesParameters{Limit: 200, Timestamp: cmp.Or(t.ThreadTS, t.TS)}
 			ctx := cmd.Context()
 			s, err := a.open(ctx)
 			if err != nil {
 				return err
 			}
-			if p.ChannelID, err = s.channelID(ctx, t); err != nil {
+			ch, err := s.channelID(ctx, t)
+			if err != nil {
 				return err
 			}
-			msgs := []slack.Message{}
-			for {
-				ms, more, next, err := s.api.GetConversationRepliesContext(ctx, p)
-				if err != nil {
-					return err
-				}
-				msgs = append(msgs, ms...)
-				if !more || next == "" {
-					break
-				}
-				p.Cursor = next
+			msgs, err := s.replies(ctx, ch, cmp.Or(t.ThreadTS, t.TS))
+			if err != nil {
+				return err
 			}
 			if a.raw {
 				return a.printJSON(msgs)
 			}
-			return a.show(ctx, s, p.ChannelID, msgs)
+			return a.show(ctx, s, ch, msgs)
 		}),
+	}
+}
+
+// replies는 스레드 전체(부모 + 답글)를 받는다. API만 부른다(tui가 Cmd 고루틴에서 부른다).
+func (s *session) replies(ctx context.Context, ch, ts string) ([]slack.Message, error) {
+	p := &slack.GetConversationRepliesParameters{ChannelID: ch, Timestamp: ts, Limit: 200}
+	msgs := []slack.Message{}
+	for {
+		ms, more, next, err := s.api.GetConversationRepliesContext(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, ms...)
+		if !more || next == "" {
+			return msgs, nil
+		}
+		p.Cursor = next
 	}
 }
 
