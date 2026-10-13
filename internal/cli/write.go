@@ -190,6 +190,7 @@ func (a *app) markCmd() *cobra.Command {
 }
 
 // markTo는 ts까지 읽음 처리한다. 현재 읽음 위치보다 과거면 거절한다(되돌리기 사고 방지).
+// 이 거절이 유일한 usageError다 — markRead(TUI)가 그것으로 거절을 가린다.
 func (s *session) markTo(ctx context.Context, ch, ts string) error {
 	info, err := s.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{ChannelID: ch})
 	if err != nil {
