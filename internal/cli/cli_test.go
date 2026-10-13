@@ -20,6 +20,7 @@ import (
 
 	"github.com/jinto/gslack/internal/core"
 	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
 )
 
 // fakeSlack는 읽기 API 몇 개만 흉내 낸다. 요청 폼을 기록한다.
@@ -891,5 +892,73 @@ func TestRichTextOnly(t *testing.T) {
 		{"type":"rich_text_list","style":"bullet","elements":[{"type":"rich_text_section","elements":[{"type":"text","text":"하나"}]}]}]}]}`), &m)
 	if got, want := fallbackText(m), "허들이 시작됨 <@U1><https://x.com|x>\n• 하나"; got != want {
 		t.Errorf("fallbackText = %q; want %q", got, want)
+	}
+}
+
+func TestWatchKeep(t *testing.T) {
+	w := &watcher{me: "UME", member: map[string]bool{"C1": true, "C2": true}, targets: map[string]bool{"C2": true},
+		groups: map[string]bool{"SMINE": true}}
+	ev := func(ch, typ, user, sub, text, parent string) *slackevents.MessageEvent {
+		return &slackevents.MessageEvent{Channel: ch, ChannelType: typ, User: user, SubType: sub, Text: text,
+			Message: &slack.Msg{ParentUserId: parent}}
+	}
+	cases := []struct {
+		name        string
+		e           *slackevents.MessageEvent
+		show, alert bool
+	}{
+		{"채널 일반", ev("C1", "channel", "U2", "", "hi", ""), false, false},
+		{"대상 일반", ev("C2", "channel", "U2", "", "hi", ""), true, false},
+		{"DM", ev("D1", "im", "U2", "", "hi", ""), true, true},
+		{"그룹 DM", ev("G1", "mpim", "U2", "", "hi", ""), true, true},
+		{"내 메시지", ev("D1", "im", "UME", "", "hi", ""), false, false},
+		{"수정 이벤트", ev("D1", "im", "", "message_changed", "", ""), false, false},
+		{"입장", ev("C1", "channel", "U2", "channel_join", "<@UME>", ""), false, false},
+		{"내 멘션", ev("C1", "channel", "U2", "", "hey <@UME>", ""), true, true},
+		{"미가입 채널 내 멘션", ev("C9", "channel", "U2", "", "<@UME|jk>", ""), true, true},
+		{"남 멘션", ev("C1", "channel", "U2", "", "<@UMEX>", ""), false, false},
+		{"here", ev("C1", "channel", "U2", "", "<!here> 공지", ""), true, true},
+		{"미가입 channel", ev("C9", "channel", "U2", "", "<!channel>", ""), false, false},
+		{"내 그룹", ev("C1", "channel", "U2", "", "<!subteam^SMINE|@dev>", ""), true, true},
+		{"남 그룹", ev("C1", "channel", "U2", "", "<!subteam^SOTHER>", ""), false, false},
+		{"내 스레드 답글", ev("C1", "channel", "U2", "", "ok", "UME"), true, true},
+		{"봇 DM", ev("D1", "im", "", "bot_message", "알림", ""), true, true},
+		{"브로드캐스트 통과", ev("C2", "channel", "U2", "thread_broadcast", "hi", ""), true, false},
+		{"파일 통과", ev("C2", "channel", "U2", "file_share", "", ""), true, false},
+		{"me_message", ev("C2", "channel", "U2", "me_message", "", ""), true, false},
+		{"here 라벨", ev("C1", "channel", "U2", "", "<!here|@here>", ""), true, true},
+		{"everyone", ev("C1", "channel", "U2", "", "<!everyone>", ""), true, true},
+	}
+	for _, c := range cases {
+		if show, alert := w.keep(c.e, c.e.Text); show != c.show || alert != c.alert {
+			t.Errorf("%s: show=%v alert=%v", c.name, show, alert)
+		}
+	}
+	br := ev("C1", "channel", "U2", "thread_broadcast", "ok", "")
+	br.Root = &slack.Msg{User: "UME"}
+	if show, alert := w.keep(br, "ok"); !show || !alert {
+		t.Error("내 스레드의 broadcast 답글을 놓쳤다")
+	}
+	w.all = true
+	if show, alert := w.keep(ev("C1", "channel", "U2", "", "hi", ""), "hi"); !show || alert {
+		t.Errorf("--all: %v %v", show, alert)
+	}
+	if show, _ := w.keep(ev("C9", "channel", "U2", "", "hi", ""), "hi"); show {
+		t.Error("--all인데 미가입 채널이 보인다")
+	}
+	w.groups = nil // usergroups:read 없음 → 모든 그룹 멘션
+	if _, alert := w.keep(ev("C1", "channel", "U2", "", "<!subteam^SOTHER>", ""), "<!subteam^SOTHER>"); !alert {
+		t.Error("그룹을 모르면 그룹 멘션을 통과시켜야 한다")
+	}
+}
+
+func TestWatchNeedsAppToken(t *testing.T) {
+	f := setup(t)
+	t.Setenv("GSLACK_APP_TOKEN", "")
+	if code, _, e := gslack("watch"); code != 2 || !strings.Contains(e, "앱 토큰") {
+		t.Fatalf("%d %s", code, e)
+	}
+	if len(f.reqs["users.conversations"]) != 0 {
+		t.Error("토큰 검사 전에 대화 목록을 받았다")
 	}
 }

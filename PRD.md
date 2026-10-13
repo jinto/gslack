@@ -113,11 +113,11 @@ gslack presence away|auto
 
 ### 4.5 실시간·알림
 ```
-gslack watch [targets…] [--notify] [--mentions-only]
+gslack watch [targets…] [--all] [--notify]
 ```
 - 새 메시지를 한 줄씩 stdout으로 스트리밍한다. `--json`이면 NDJSON으로 출력한다.
 - Socket Mode envelope는 3초 안에 ack하고, `event_id`로 중복을 제거한다. 자기 메시지는 거른다.
-- `--mentions-only`는 `<@나>`, `<!here>`, `<!channel>`, 내가 속한 `<!subteam^…>`을 포함한다. *(기본값)*
+- 기본은 DM·그룹 DM과 `<@나>`, `<!here>`, `<!channel>`, 내가 속한 `<!subteam^…>`(`usergroups:read`) 멘션만. 대상을 주면 그 대화 전체, `--all`이면 가입한 모든 대화.
 - 내가 참여한 스레드의 답글도 알린다. `message_changed/deleted`는 기본으로 거른다. *(기본값)*
 - `--notify`면 멘션/DM이 올 때 macOS 알림을 띄운다(`osascript -e 'display notification …'`, 추가 의존성 없음).
 - 연결이 끊기면 지수 백오프로 재연결한다.

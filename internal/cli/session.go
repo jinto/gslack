@@ -25,6 +25,7 @@ type session struct {
 	files   *slack.Client // 파일 업로드·다운로드: 전체 제한 없음(큰 파일), Ctrl-C로 끊는다
 	cache   store.Cache
 	refresh bool
+	app     string // xapp-(watch용, 없을 수 있다) — api에 이미 실려 있다
 
 	users      map[string]core.User // id → user
 	usersFresh bool
@@ -34,7 +35,7 @@ type session struct {
 
 // newAPI는 클라이언트를 만든다. timeout 0이면 요청 전체 제한이 없고(파일 전송용),
 // 응답 헤더까지 30초(요청 본문을 다 보낸 뒤부터)와 Ctrl-C(context)로만 끊는다.
-func newAPI(token, cookie string, timeout time.Duration) *slack.Client {
+func newAPI(token, cookie string, timeout time.Duration, extra ...slack.Option) *slack.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 30 * time.Second
 	hc := &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: checkRedirect}
@@ -47,7 +48,7 @@ func newAPI(token, cookie string, timeout time.Duration) *slack.Client {
 	if apiURL != "" {
 		opts = append(opts, slack.OptionAPIURL(apiURL))
 	}
-	return slack.New(token, opts...)
+	return slack.New(token, append(opts, extra...)...)
 }
 
 var apiURL string // 테스트에서 가짜 서버로 바꾼다
@@ -112,13 +113,13 @@ func (a *app) open(ctx context.Context) (*session, error) {
 		return nil, usagef("프로필 이름 %q가 올바르지 않다", a.profile)
 	}
 	if tok := os.Getenv("GSLACK_TOKEN"); tok != "" {
-		cookie := cookieHeader(os.Getenv("GSLACK_COOKIE"))
-		api := newAPI(tok, cookie, apiTimeout)
+		cookie, app := cookieHeader(os.Getenv("GSLACK_COOKIE")), os.Getenv("GSLACK_APP_TOKEN")
+		api := newAPI(tok, cookie, apiTimeout, slack.OptionAppLevelToken(app))
 		res, err := api.AuthTestContext(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return &session{name: "env", prof: profileFrom(res, tok), api: api, files: newAPI(tok, cookie, 0),
+		return &session{name: "env", prof: profileFrom(res, tok), api: api, files: newAPI(tok, cookie, 0), app: app,
 			cache: store.OpenCache("env-" + res.TeamID + "-" + res.UserID), refresh: a.refresh}, nil
 	}
 	cfg, err := store.LoadConfig()
@@ -143,8 +144,8 @@ func (a *app) open(ctx context.Context) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &session{name: name, prof: prof, api: newAPI(sec.Token, sec.Cookie, apiTimeout), files: newAPI(sec.Token, sec.Cookie, 0),
-		cache: store.OpenCache(name), refresh: a.refresh}, nil
+	return &session{name: name, prof: prof, api: newAPI(sec.Token, sec.Cookie, apiTimeout, slack.OptionAppLevelToken(sec.AppToken)),
+		files: newAPI(sec.Token, sec.Cookie, 0), app: sec.AppToken, cache: store.OpenCache(name), refresh: a.refresh}, nil
 }
 
 func profileFrom(res *slack.AuthTestResponse, token string) store.Profile {

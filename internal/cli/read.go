@@ -218,6 +218,24 @@ func (s *session) fetchMessage(ctx context.Context, ch, ts string) (slack.Messag
 	return slack.Message{}, usagef("%s에 %s 메시지가 없다", ch, ts)
 }
 
+// withTags는 본문 뒤에 답글 수·파일·수정 표시를 붙인다.
+func withTags(text string, m core.Message) string {
+	var tags []string
+	if m.ReplyCount > 0 {
+		tags = append(tags, fmt.Sprintf("[%d replies]", m.ReplyCount))
+	}
+	for _, f := range m.Files {
+		tags = append(tags, "[file: "+f.Name+"]")
+	}
+	if m.Edited {
+		tags = append(tags, "(edited)")
+	}
+	if len(tags) > 0 {
+		text = strings.TrimSpace(text + " " + strings.Join(tags, " "))
+	}
+	return text
+}
+
 // printMessages: 날짜가 바뀌면 머리줄, 메시지마다 ts를 항상 앞에 둔다(다음 명령의 입력).
 func (s *session) printMessages(ctx context.Context, w io.Writer, msgs []core.Message) {
 	user := func(id string) string { return s.userName(ctx, id) }
@@ -229,20 +247,7 @@ func (s *session) printMessages(ctx context.Context, w io.Writer, msgs []core.Me
 			fmt.Fprintf(w, "── %s ──\n", day)
 			lastDay = day
 		}
-		text := core.Render(m.Text, user, s.channelName)
-		var tags []string
-		if m.ReplyCount > 0 {
-			tags = append(tags, fmt.Sprintf("[%d replies]", m.ReplyCount))
-		}
-		for _, f := range m.Files {
-			tags = append(tags, "[file: "+f.Name+"]")
-		}
-		if m.Edited {
-			tags = append(tags, "(edited)")
-		}
-		if len(tags) > 0 {
-			text = strings.TrimSpace(text + " " + strings.Join(tags, " "))
-		}
+		text := withTags(core.Render(m.Text, user, s.channelName), m)
 		name := m.UserName
 		if name == "" {
 			name = m.User
