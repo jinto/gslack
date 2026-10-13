@@ -111,11 +111,6 @@ func replyThread(r tuiRow) string {
 	return r.latest.TS
 }
 
-type tuiReply struct {
-	row    tuiRow // 값 복사 — 입력 중 filledMsg가 줄을 바꿔도 대상은 그대로
-	thread string
-}
-
 // tuiModel: Cmd(고루틴)는 Slack API만 부르고, 이름 해석·렌더링은 Update(한 고루틴)에서 한다.
 // 세션 캐시는 첫 채우기 Cmd만 채우고, Update는 첫 filledMsg 전엔 세션을 건드리지 않는다.
 type tuiModel struct {
@@ -131,7 +126,7 @@ type tuiModel struct {
 	listH   int
 	vp      viewport.Model
 	ti      textinput.Model
-	reply   *tuiReply // 답장 입력 중
+	reply   *tuiRow // 답장 입력 중 — 값 복사라 입력 중 filledMsg가 줄을 바꿔도 대상은 그대로
 	sending bool
 	status  string
 }
@@ -201,14 +196,14 @@ func (m *tuiModel) send(text string) tea.Cmd {
 	ctx, s, r := m.ctx, m.s, *m.reply
 	return func() tea.Msg {
 		opts := []slack.MsgOption{slack.MsgOptionText(text, false)}
-		if r.thread != "" {
-			opts = append(opts, slack.MsgOptionTS(r.thread))
+		if th := replyThread(r); th != "" {
+			opts = append(opts, slack.MsgOptionTS(th))
 		}
-		ch, ts, _, err := s.api.PostMessageWithResponseContext(ctx, r.row.ch.ID, opts...)
+		ch, ts, _, err := s.api.PostMessageWithResponseContext(ctx, r.ch.ID, opts...)
 		if err != nil {
-			return sentMsg{row: r.row, err: err}
+			return sentMsg{row: r, err: err}
 		}
-		return sentMsg{r.row, ts, nil, s.markRead(ctx, ch, ts)}
+		return sentMsg{r, ts, nil, s.markRead(ctx, ch, ts)}
 	}
 }
 
@@ -382,9 +377,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				return m, m.preview(r)
 			case "r":
-				m.reply, m.status = &tuiReply{r, replyThread(r)}, ""
+				m.reply, m.status = &r, ""
 				m.ti.Prompt = " 답장 " + r.name + " > "
-				if m.reply.thread != "" {
+				if replyThread(r) != "" {
 					m.ti.Prompt = " 답장 " + r.name + " ↳ > "
 				}
 				m.ti.Width = max(m.vp.Width-lipgloss.Width(m.ti.Prompt)-1, 1)
