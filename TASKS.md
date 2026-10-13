@@ -91,4 +91,8 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
     session으로 미확인: mark·send·edit/delete·search·react·status·그룹 멘션 — 쓰기 명령은 셀프 DM으로 사용자가
 
 ## M4. TUI(별도 기획)
-- [ ] M1~M3 코어를 재사용하는 TUI PRD 작성
+- [x] M1~M3 코어를 재사용하는 TUI PRD 작성
+  → 2026-10-13 PRD-TUI.md. 사용자 결정: 받은편지함형, 실시간은 프로필 따라 자동, `gslack tui`, 읽음은 `m`·답장 때만. 리뷰 반영: 한 줄 = 대화, 잠금 없음(API는 Cmd, 이름 해석은 Update), 실시간은 T3으로(핵심 루프 먼저), 한 패널 모드·도움말·`--all` 뺌
+- [ ] T1 보기: 시작 채우기 + 목록 + Enter 미리보기 + j/k/R/q, 상태줄 writer, `unreadRows`·`replies` 추출
+- [ ] T2 처리: `r` 답장(스레드 규칙), `m` 치우기, 답장 뒤 자동 읽음, `o`
+- [ ] T3 실시간: watch 소스 콜백 인자화, 병합(ts 가드), 재연결 자동 R, `--notify`
