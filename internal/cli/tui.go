@@ -29,23 +29,25 @@ func (a *app) tuiCmd() *cobra.Command {
 			if !isTTY(a.out) {
 				return usagef("tui는 터미널에서만 연다")
 			}
-			ctx := cmd.Context()
-			s, err := a.open(ctx)
+			parent := cmd.Context()
+			s, err := a.open(parent)
 			if err != nil {
 				return err
 			}
-			p := tea.NewProgram(newTUI(ctx, a, s), tea.WithContext(ctx), tea.WithAltScreen(), tea.WithOutput(a.out))
-			// 경고·진행 출력은 상태줄로. 되돌리지 않으면 RunE 오류가 끝난 프로그램으로 가서 사라진다.
-			errw := a.errw
-			a.errw = statusWriter(p.Send)
-			defer func() { a.errw = errw }()
-			if _, err := p.Run(); err != nil {
-				if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return err
+			ctx, cancel := context.WithCancel(parent) // q로 끝나면 돌던 Cmd도 끝낸다
+			defer cancel()
+			// 경고·진행 출력은 상태줄로. a.errw는 그대로 둔다 — RunE 오류는 원래 stderr로 가야 하고, 늦게 끝난 Cmd가 읽어도 경합이 없다.
+			ta := *a
+			p := tea.NewProgram(newTUI(ctx, &ta, s), tea.WithContext(ctx), tea.WithAltScreen(), tea.WithOutput(a.out))
+			ta.errw = statusWriter(p.Send)
+			_, err = p.Run()
+			switch {
+			case errors.Is(err, tea.ErrInterrupted):
+				return context.Canceled
+			case errors.Is(err, tea.ErrProgramKilled) && parent.Err() != nil:
+				return parent.Err()
 			}
-			return nil
+			return err
 		}),
 	}
 }
@@ -120,8 +122,8 @@ func (m *tuiModel) fill() tea.Cmd {
 			if err := s.loadChannels(ctx, false); err != nil {
 				return filledMsg{err: err}
 			}
-			if err := s.loadUsers(ctx, false); err != nil {
-				return filledMsg{err: err}
+			if err := s.loadUsers(ctx, false); err != nil { // 이름 프리페치일 뿐 — 실패해도 이름은 ID로 나온다(unread와 같게)
+				fmt.Fprintf(a.errw, "사용자 목록 실패(%v)\n", err)
 			}
 			chans = []core.Channel{}
 			for _, c := range s.chans {
@@ -149,7 +151,7 @@ func (m *tuiModel) preview(r tuiRow) tea.Cmd {
 		}
 		res, err := s.api.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{ChannelID: r.ch.ID, Limit: 20})
 		if err != nil {
-			return previewMsg{seq: seq, err: err}
+			return previewMsg{seq, head, r.ch.ID, nil, err}
 		}
 		slices.Reverse(res.Messages) // 최신순 → 아래가 최신
 		return previewMsg{seq, head, r.ch.ID, res.Messages, nil}
@@ -189,8 +191,8 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.seq {
 			return m, nil
 		}
-		if msg.err != nil {
-			m.status = "미리보기 실패: " + msg.err.Error()
+		if msg.err != nil { // 이전 대화의 미리보기를 남기지 않는다
+			m.vp.SetContent(msg.head + "\n미리보기 실패: " + msg.err.Error())
 			return m, nil
 		}
 		out := make([]core.Message, len(msg.msgs))
@@ -228,14 +230,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var (
-	nameStyle = lipgloss.NewStyle().Width(24).MaxWidth(24)
+	nameStyle = lipgloss.NewStyle().Width(24).MaxWidth(24).Inline(true) // Inline 없으면 자르지 않고 줄바꿈한다
 	curStyle  = lipgloss.NewStyle().Reverse(true)
 )
 
 func (m *tuiModel) View() string {
 	var b strings.Builder
-	line := lipgloss.NewStyle().MaxWidth(m.vp.Width)
-	top := max(m.cur-m.listH+1, 0) // 커서가 보이게
+	line := lipgloss.NewStyle().MaxWidth(m.vp.Width).Inline(true) // 여러 줄 오류가 와도 한 줄
+	top := max(m.cur-m.listH+1, 0)                                // 커서가 보이게
 	for i := top; i < top+m.listH; i++ {
 		switch {
 		case i < len(m.rows):

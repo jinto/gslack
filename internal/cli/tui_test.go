@@ -83,9 +83,15 @@ func TestTUIThreadPreview(t *testing.T) {
 	m := newTUI(ctx, a, s)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.Update(filledMsg{chans: s.chans, items: []*unreadItem{{ch: core.Channel{ID: "C1GENERAL0", Name: "general"}, count: 1,
-		latest: slack.Message{Msg: slack.Msg{Timestamp: "1700000002.500000", ThreadTimestamp: "1700000002.000000", User: "U1AAAAAAAA"}}}}})
+		latest: slack.Message{Msg: slack.Msg{Timestamp: "1700000002.500000", ThreadTimestamp: "1700000002.000000", User: "U1AAAAAAAA"}}},
+		{ch: core.Channel{ID: "G2MPDMMPDM", Name: "mpdm-alice--bob--carol--dave-1", Kind: core.KindMPIM}, count: 1,
+			latest: slack.Message{Msg: slack.Msg{Timestamp: "1700000002.500000", ThreadTimestamp: "1700000002.000000", User: "U1AAAAAAAA"}}}}})
 	_, cmd := m.Update(press("enter"))
 	m.Update(cmd())
+	m.Update(statusMsg("여러\n줄 오류"))
+	if v := m.View(); strings.Count(v, "\n") != 23 || strings.Contains(v, "dave") { // 24줄 화면: 긴 이름은 잘리고, 여러 줄 상태는 한 줄로
+		t.Errorf("레이아웃:\n%s", v)
+	}
 	if v := m.View(); !strings.Contains(v, "#general ↳") || !strings.Contains(v, "#general — 스레드") || !strings.Contains(v, "parent") {
 		t.Errorf("스레드 미리보기:\n%s", v)
 	}
