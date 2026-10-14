@@ -85,7 +85,7 @@ func TestTUIThreadPreview(t *testing.T) {
 	}
 	m := newTUI(ctx, a, s)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m.Update(filledMsg{chans: s.chans, items: []*unreadItem{{ch: core.Channel{ID: "C1GENERAL0", Name: "general"}, count: 1,
+	m.Update(filledMsg{scope: s.chans, items: []*unreadItem{{ch: core.Channel{ID: "C1GENERAL0", Name: "general"}, count: 1,
 		latest: slack.Message{Msg: slack.Msg{Timestamp: "1700000002.500000", ThreadTimestamp: "1700000002.000000", User: "U1AAAAAAAA"}}},
 		{ch: core.Channel{ID: "G2MPDMMPDM", Name: "mpdm-alice--bob--carol--dave-1", Kind: core.KindMPIM}, count: 1,
 			latest: slack.Message{Msg: slack.Msg{Timestamp: "1700000002.500000", ThreadTimestamp: "1700000002.000000", User: "U1AAAAAAAA"}}}}})
@@ -126,11 +126,22 @@ func filledTUI(t *testing.T) (*fakeSlack, *tuiModel) {
 	}
 	m := newTUI(ctx, a, s)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m.Update(m.Init()())
-	if len(m.rows) != 1 {
+	drain(m, m.Init())
+	if len(m.rows) != 3 || m.rows[0].ch.ID != "D3UNREADDM" || m.filling {
 		t.Fatalf("rows %v", m.rows)
 	}
 	return f, m
+}
+
+// drain은 Cmd가 낸 메시지를 Update에 넣고, 그 Update가 낸 Cmd를 이어서 — 채우기 두 단계 끝까지.
+func drain(m *tuiModel, cmd tea.Cmd) {
+	for cmd != nil {
+		_, cmd = m.Update(cmd())
+	}
+}
+
+func dms(m *tuiModel) []core.Channel {
+	return slices.DeleteFunc(slices.Clone(m.s.chans), func(c core.Channel) bool { return c.Kind != core.KindIM && c.Kind != core.KindMPIM })
 }
 
 func TestTUIReply(t *testing.T) {
@@ -295,9 +306,10 @@ func TestTUIOpen(t *testing.T) {
 	}
 }
 
+// live는 나에게 온 실시간 메시지다. 채널 일반 글은 .alert = false로.
 func live(ch, typ, user, ts, text, threadTS string) liveMsg {
 	return liveMsg{&slackevents.MessageEvent{Channel: ch, ChannelType: typ, User: user, Text: text,
-		Message: &slack.Msg{Channel: ch, User: user, Text: text, Timestamp: ts, ThreadTimestamp: threadTS}}}
+		Message: &slack.Msg{Channel: ch, User: user, Text: text, Timestamp: ts, ThreadTimestamp: threadTS}}, true}
 }
 
 // TestTUILive: 실시간 메시지 병합 — ts 가드, 새 줄, 치운 줄, 채우는 중 온 것, R 합치기, 알림.
@@ -315,7 +327,7 @@ func TestTUILive(t *testing.T) {
 	}
 
 	note(m.Update(live("D9NEWDMDM0", "im", "U1AAAAAAAA", "1700000010.000000", "새 DM", "")))
-	if len(m.rows) != 2 || m.rows[0].ch.ID != "D9NEWDMDM0" || m.rows[0].count != 1 || m.rows[0].name != "@jk" || m.curID() != "D3UNREADDM" {
+	if len(m.rows) != 4 || m.rows[0].ch.ID != "D9NEWDMDM0" || m.rows[0].count != 1 || m.rows[0].name != "@jk" || m.curID() != "D3UNREADDM" {
 		t.Fatalf("새 줄: %+v cur %s", m.rows, m.curID())
 	}
 	note(m.Update(live("D9NEWDMDM0", "im", "U1AAAAAAAA", "1700000010.000000", "재전송", "")))
@@ -344,20 +356,20 @@ func TestTUILive(t *testing.T) {
 	if m.rows[0].count != 2 || notes != 5 {
 		t.Errorf("채우는 중: %+v 알림 %d", m.rows[0], notes)
 	}
-	m.Update(fill())
+	drain(m, fill)
 	ids := []string{}
 	for _, r := range m.rows {
 		ids = append(ids, r.ch.ID)
 	}
-	// D9(치움) 사라짐, D1 스레드 줄·C1(채우기 대상 밖) 남음. D3는 채우기 1 + 채우는 중 1.
-	if strings.Join(ids, ",") != "D3UNREADDM,D1DMDMDMDM,C1GENERAL0" || m.rows[0].count != 2 || m.rows[0].latest.TS != "1700000014.000000" || notes != 5 {
+	// D9(치움) 사라짐, D1 스레드 줄 남음. D3는 채우기 1 + 채우는 중 1. C1은 채널 단계가 따른다(가짜 history에 멘션이 없어 채널 구역).
+	if strings.Join(ids, ",") != "D3UNREADDM,D1DMDMDMDM,C1GENERAL0,G1NEVERREAD" || m.rows[0].count != 2 || m.rows[0].latest.TS != "1700000014.000000" || notes != 5 {
 		t.Errorf("R 뒤: %v %+v 알림 %d", ids, m.rows[0], notes)
 	}
 
 	// 채우기가 그 메시지를 이미 셌으면 다시 세지 않는다.
 	m.Update(press("R"))
 	m.Update(live("D3UNREADDM", "im", "U3HHHHHHHH", "1700000015.000000", "x", ""))
-	m.Update(filledMsg{chans: m.chans, items: []*unreadItem{{ch: m.rows[0].ch, count: 5,
+	m.Update(filledMsg{scope: dms(m), items: []*unreadItem{{ch: m.rows[0].ch, count: 5, forMe: true,
 		latest: slack.Message{Msg: slack.Msg{Timestamp: "1700000015.000000", User: "U3HHHHHHHH"}}}}})
 	if r := m.rows[0]; r.count != 5 || len(m.pending) != 0 {
 		t.Errorf("채우기가 센 것: %+v", r)
@@ -372,17 +384,17 @@ func TestTUILiveConn(t *testing.T) {
 	if _, cmd := m.Update(reconnectedMsg{}); cmd != nil || !m.refill {
 		t.Error("채우는 중 재연결은 끝나고 한 번 더")
 	}
-	if _, cmd := m.Update(filledMsg{chans: m.chans}); cmd == nil || !m.filling || m.refill {
+	if _, cmd := m.Update(filledMsg{}); cmd == nil || !m.filling || m.refill {
 		t.Error("refill")
 	}
-	m.Update(filledMsg{chans: m.chans})
+	m.Update(filledMsg{})
 
-	// 첫 채우기가 실패해도 chans를 받았으면 R은 newWatcher(users.conversations)를 다시 타지 않는다.
+	// 첫 채우기가 실패해도 watcher를 받았으면 R은 newWatcher(users.conversations)를 다시 타지 않는다.
 	m2 := newTUI(m.ctx, m.a, m.s)
-	m2.Update(filledMsg{chans: []core.Channel{}, err: errors.New("boom")})
+	m2.Update(filledMsg{w: &watcher{}, err: errors.New("boom")})
 	n := len(f.reqs["users.conversations"])
 	_, cmd := m2.Update(press("R"))
-	m2.Update(cmd())
+	drain(m2, cmd)
 	if len(f.reqs["users.conversations"]) != n {
 		t.Error("R이 첫 채우기를 다시 탔다")
 	}
@@ -447,14 +459,14 @@ func TestTUIMerge(t *testing.T) {
 	d3.done = true
 	m.rows = []tuiRow{d3, bc}
 	m.Update(press("R"))
-	m.Update(filledMsg{chans: m.chans, items: []*unreadItem{{ch: d3.ch, count: 1,
+	m.Update(filledMsg{scope: dms(m), items: []*unreadItem{{ch: d3.ch, count: 1, forMe: true,
 		latest: slack.Message{Msg: slack.Msg{Timestamp: d3.latest.TS, User: "U3HHHHHHHH"}}}}})
 	if len(m.rows) != 1 || m.rows[0].ch.ID != "D3UNREADDM" || !m.rows[0].done {
 		t.Errorf("합친 줄: %+v", m.rows)
 	}
 }
 
-// TestTUIRTM: session 프로필의 첫 채우기가 RTM을 띄우고, 나에게 온 것만 push한다.
+// TestTUIRTM: session 프로필의 첫 채우기가 RTM을 띄우고, 가입 채널 글(일반)과 나에게 온 것을 alert로 나눠 push한다.
 func TestTUIRTM(t *testing.T) {
 	f := setup(t)
 	t.Setenv("GSLACK_TOKEN", "xoxc-test")
@@ -477,16 +489,242 @@ func TestTUIRTM(t *testing.T) {
 	if msg := m.Init()(); msg.(filledMsg).err != nil {
 		t.Fatal(msg)
 	}
-	select {
-	case msg := <-got:
-		if l, ok := msg.(liveMsg); !ok || l.e.Channel != "D1DMDMDMDM" || l.e.ChannelType != core.KindIM {
-			t.Fatalf("첫 push: %#v", msg)
+	for _, want := range []liveMsg{{&slackevents.MessageEvent{Channel: "C1GENERAL0", ChannelType: core.KindPublic}, false},
+		{&slackevents.MessageEvent{Channel: "D1DMDMDMDM", ChannelType: core.KindIM}, true}} {
+		select {
+		case msg := <-got:
+			if l, ok := msg.(liveMsg); !ok || l.e.Channel != want.e.Channel || l.e.ChannelType != want.e.ChannelType || l.alert != want.alert {
+				t.Fatalf("push: %#v", msg)
+			}
+		case <-ctx.Done():
+			t.Fatal("오지 않았다:", want.e.Channel)
 		}
-	case <-ctx.Done():
-		t.Fatal("DM이 오지 않았다")
 	}
 	cancel()
 	if msg := <-got; msg != (liveDownMsg{}) {
 		t.Errorf("취소 뒤: %#v", msg)
+	}
+}
+
+// TestUnreadForMe: 채널의 안 읽은 것 중 나에게 온 것이 있으면 forMe, latest는 그것. count는 전체. w 없으면(unread 명령) 지금 그대로.
+func TestUnreadForMe(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+	s, err := (&app{out: &bytes.Buffer{}, errw: &bytes.Buffer{}}).open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &watcher{me: "U0MEMEMEME", member: map[string]bool{"C3MENTION0": true, "C4BROADCST": true}}
+	for _, c := range []struct {
+		ch     string
+		w      *watcher
+		forMe  bool
+		latest string
+		count  int
+	}{
+		{"C3MENTION0", w, true, "1700000005.000000", 3},
+		{"C3MENTION0", nil, false, "1700000006.000000", 3},
+		{"C4BROADCST", w, true, "1700000004.000000", 2}, // 내 스레드 broadcast(root)
+	} {
+		it, err := s.unreadOne(ctx, core.Channel{ID: c.ch, Kind: core.KindPublic}, c.w)
+		if err != nil || it.forMe != c.forMe || it.latest.Timestamp != c.latest || it.count != c.count {
+			t.Errorf("%s w=%v: %+v %v", c.ch, c.w != nil, it, err)
+		}
+	}
+}
+
+func ids(m *tuiModel) string {
+	var out []string
+	for _, r := range m.rows {
+		out = append(out, r.ch.ID)
+	}
+	return strings.Join(out, ",")
+}
+
+func plain(ch, ts string) liveMsg {
+	l := live(ch, "channel", "U1AAAAAAAA", ts, "plain", "")
+	l.alert = false
+	return l
+}
+
+// TestTUIChannels: 두 구역 — 정렬, 머리줄, 창 자르기, 실시간 일반 글과 나에게 온 것.
+func TestTUIChannels(t *testing.T) {
+	_, m := filledTUI(t) // D3(나에게), C1·G1(채널, 멘션 없음)
+	if ids(m) != "D3UNREADDM,C1GENERAL0,G1NEVERREAD" || m.rows[1].forMe || m.rows[2].forMe {
+		t.Fatalf("구역: %s %+v", ids(m), m.rows)
+	}
+	v := m.View()
+	for _, want := range []string{" 나에게 (1)", " 채널 (2)", "○ #general", "● @지수"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("%q 없음:\n%s", want, v)
+		}
+	}
+	m.listH, m.cur = 2, 2 // 머리줄 둘이 끼어도 커서 줄이 보인다
+	if v := m.View(); !strings.Contains(v, "#never") || strings.Contains(v, "나에게") {
+		t.Errorf("창:\n%s", v)
+	}
+	m.listH, m.cur = 9, 0
+
+	var notes int
+	orig := notifyFn
+	t.Cleanup(func() { notifyFn = orig })
+	notifyFn = func(string, string) error { notes++; return nil }
+	m.notify = true
+	run := func(_ tea.Model, cmd tea.Cmd) {
+		if cmd != nil {
+			cmd()
+		}
+	}
+	run(m.Update(plain("C1GENERAL0", "1700000020.000000")))
+	if r := at(m, "C1GENERAL0"); r.forMe || r.count != 3 || notes != 0 {
+		t.Errorf("일반 글: %+v 알림 %d", r, notes)
+	}
+	run(m.Update(live("C1GENERAL0", "channel", "U1AAAAAAAA", "1700000021.000000", "<@U0MEMEMEME>", "")))
+	if r := m.rows[0]; r.ch.ID != "C1GENERAL0" || !r.forMe || r.count != 4 || notes != 1 {
+		t.Errorf("나에게로: %s %+v 알림 %d", ids(m), r, notes)
+	}
+	m.Update(plain("C1GENERAL0", "1700000022.000000")) // 안 치운 나에게 줄은 멘션을 latest로 둔다
+	if r := at(m, "C1GENERAL0"); r.latest.TS != "1700000021.000000" || r.count != 4 {
+		t.Errorf("나에게 줄에 일반 글: %+v", r)
+	}
+	m.rows[0].done = true
+	m.Update(plain("C1GENERAL0", "1700000023.000000"))
+	if r := at(m, "C1GENERAL0"); r.forMe || r.done || r.count != 1 || ids(m) != "D3UNREADDM,C1GENERAL0,G1NEVERREAD" {
+		t.Errorf("치운 뒤 일반 글: %s %+v", ids(m), r)
+	}
+
+	m.rows = m.rows[1:] // 나에게 줄이 없어도 머리줄은 보인다
+	if v := m.View(); !strings.Contains(v, " 나에게 (0)") {
+		t.Errorf("나에게 (0):\n%s", v)
+	}
+}
+
+// TestTUIMergeScope: 채우기는 자기 scope만 따른다. 나에게 스레드 줄은 더 새 채널 채우기 줄에 지지 않는다.
+func TestTUIMergeScope(t *testing.T) {
+	_, m := filledTUI(t)
+	c1 := m.s.chans[slices.IndexFunc(m.s.chans, func(c core.Channel) bool { return c.ID == "C1GENERAL0" })]
+	th := tuiRow{ch: c1, count: 1, forMe: true, latest: core.Message{TS: "1700000030.000000", ThreadTS: "1700000001.000000"}}
+	m.rows = []tuiRow{m.rows[0], th, m.rows[2]}
+	m.Update(filledMsg{scope: []core.Channel{c1, m.rows[2].ch}, items: []*unreadItem{{ch: c1, count: 9,
+		latest: slack.Message{Msg: slack.Msg{Timestamp: "1700000040.000000", User: "U1AAAAAAAA"}}}}})
+	if r := at(m, "C1GENERAL0"); !r.forMe || r.latest.TS != "1700000030.000000" || ids(m) != "C1GENERAL0,D3UNREADDM" {
+		t.Errorf("합치기: %s %+v", ids(m), r) // G1은 scope 안인데 채우기에 없다 — 읽음
+	}
+}
+
+func at(m *tuiModel, ch string) tuiRow { return m.rows[m.rowIndex(ch)] }
+
+// TestTUIFillPhases: DM 실패여도 채널 단계, 재연결은 DM만, 채우는 중 R, 상태줄 진행.
+func TestTUIFillPhases(t *testing.T) {
+	_, m := filledTUI(t)
+	m.filling = true
+	if _, cmd := m.Update(filledMsg{err: errors.New("boom"), next: true}); cmd == nil || !m.filling {
+		t.Error("DM 실패 뒤 채널 단계가 없다")
+	}
+	if _, cmd := m.Update(press("R")); cmd != nil || !strings.Contains(m.status, "끝나면 R") {
+		t.Errorf("채우는 중 R: %q", m.status)
+	}
+	m.Update(filledMsg{})
+
+	_, cmd := m.Update(reconnectedMsg{})
+	if msg := cmd().(filledMsg); msg.next || len(msg.scope) != 2 {
+		t.Errorf("재연결은 DM만: next %v scope %v", msg.next, msg.scope)
+	}
+
+	got := make(chan tea.Msg, 100)
+	m.a.errw = statusWriter(func(msg tea.Msg) { got <- msg })
+	m.fillChannels()()
+	close(got)
+	var last tea.Msg
+	progress := false
+	for msg := range got {
+		progress = progress || strings.Contains(string(msg.(statusMsg)), "확인 중")
+		last = msg
+	}
+	if !progress || last != statusMsg("\r") {
+		t.Errorf("진행: %v 마지막 %q", progress, last)
+	}
+	m.Update(statusMsg("\r확인 중 1/3"))
+	if v := m.View(); !strings.Contains(v, "확인 중 1/3") || strings.Contains(v, "채우는 중…") {
+		t.Errorf("채우는 중 상태줄:\n%s", v)
+	}
+	m.Update(last)
+	if m.status != "" {
+		t.Errorf("끝난 진행이 남음: %q", m.status)
+	}
+}
+
+// TestTUIScan: scope는 줄이기 전 전체(session은 client.counts가 줄인다), 뮤트 채널은 나에게 온 것이 없으면 뺀다.
+func TestTUIScan(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	a := &app{out: &bytes.Buffer{}, errw: &bytes.Buffer{}}
+	s, err := a.open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.loadChannels(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	msg := scan(ctx, a, s, nil, map[string]bool{"C1GENERAL0": true}, core.KindPublic, core.KindPrivate)
+	if len(msg.scope) != 3 || len(msg.items) != 1 || msg.items[0].ch.ID != "G1NEVERREAD" {
+		t.Errorf("뮤트: scope %v items %v", msg.scope, msg.items)
+	}
+
+	t.Setenv("GSLACK_TOKEN", "xoxc-test")
+	t.Setenv("GSLACK_COOKIE", "xoxd-test")
+	f.counts = `{"ok":true,"channels":[],"ims":[],"mpims":[]}`
+	s, err = (&app{out: &bytes.Buffer{}, errw: &bytes.Buffer{}}).open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.loadChannels(ctx, false)
+	if msg := scan(ctx, a, s, nil, nil, core.KindPublic, core.KindPrivate); len(msg.scope) != 3 || len(msg.items) != 0 {
+		t.Errorf("session: scope %v items %v", msg.scope, msg.items)
+	}
+}
+
+func TestInbox(t *testing.T) {
+	w := &watcher{me: "U0MEMEMEME", all: true, member: map[string]bool{"C1": true, "C2": true}}
+	muted := map[string]bool{"C2": true}
+	ev := func(ch, text, ts, threadTS, sub string) *slackevents.MessageEvent {
+		return &slackevents.MessageEvent{Channel: ch, ChannelType: "channel", User: "U1", Text: text, SubType: sub,
+			Message: &slack.Msg{User: "U1", Text: text, Timestamp: ts, ThreadTimestamp: threadTS, SubType: sub}}
+	}
+	for _, c := range []struct {
+		name        string
+		e           *slackevents.MessageEvent
+		show, alert bool
+	}{
+		{"일반 글", ev("C1", "hi", "2.0", "", ""), true, false},
+		{"뮤트 일반 글", ev("C2", "hi", "2.0", "", ""), false, false},
+		{"뮤트 멘션", ev("C2", "<@U0MEMEMEME>", "2.0", "", ""), true, true},
+		{"남의 스레드 답글", ev("C1", "hi", "2.0", "1.0", ""), false, false},
+		{"broadcast", ev("C1", "hi", "2.0", "1.0", "thread_broadcast"), true, false},
+		{"스레드 부모", ev("C1", "hi", "1.0", "1.0", ""), true, false},
+		{"가입 안 한 채널", ev("C9", "hi", "2.0", "", ""), false, false},
+	} {
+		if show, alert := inbox(w, muted, c.e); show != c.show || alert != c.alert {
+			t.Errorf("%s: %v %v", c.name, show, alert)
+		}
+	}
+}
+
+func TestMutedChannels(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	s, err := (&app{out: &bytes.Buffer{}, errw: &bytes.Buffer{}}).open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.prefs = `{"ok":true,"prefs":{"all_notifications_prefs":"{\"channels\":{\"C1\":{\"muted\":true},\"C2\":{\"muted\":false}}}"}}`
+	if got, err := s.mutedChannels(ctx); err != nil || len(got) != 1 || !got["C1"] {
+		t.Errorf("뮤트: %v %v", got, err)
+	}
+	for _, body := range []string{`{"ok":true,"prefs":{"all_notifications_prefs":"{"}}`, `{"ok":false,"error":"missing_scope"}`} {
+		f.prefs = body
+		if _, err := s.mutedChannels(ctx); err == nil {
+			t.Errorf("%s: 오류가 아니다", body)
+		}
 	}
 }

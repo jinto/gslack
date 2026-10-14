@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/jinto/gslack/internal/core"
 	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
 	"github.com/spf13/cobra"
 )
 
@@ -46,7 +48,7 @@ session(xoxc) 프로필은 비공식 client.counts 한 번으로 안 읽은 대�
 			if err != nil {
 				return err
 			}
-			items, err := a.unreadRows(ctx, s, chans)
+			items, err := a.unreadRows(ctx, s, chans, nil)
 			if err != nil {
 				return err
 			}
@@ -88,12 +90,13 @@ type unreadItem struct {
 	ch     core.Channel
 	count  int
 	more   bool
-	latest slack.Message
+	forMe  bool          // DM·그룹 DM, 또는 안 읽은 것 중 나에게 온 것이 있음(w가 있을 때만)
+	latest slack.Message // forMe 채널이면 가장 새 "나에게 온 것"
 }
 
 // unreadRows는 안 읽은 대화를 최신순으로 돌려준다. session은 client.counts로 대상을 줄이고, 실패하면 경고 뒤 전부 훑는다.
-// 이름 해석(session 캐시)은 하지 않는다 — tui가 Cmd 고루틴에서 부른다.
-func (a *app) unreadRows(ctx context.Context, s *session, chans []core.Channel) ([]*unreadItem, error) {
+// 이름 해석(session 캐시)은 하지 않는다 — tui가 Cmd 고루틴에서 부른다. w가 있으면 채널의 forMe를 가린다(tui).
+func (a *app) unreadRows(ctx context.Context, s *session, chans []core.Channel, w *watcher) ([]*unreadItem, error) {
 	if s.prof.Kind == "session" {
 		ids, err := s.clientCounts(ctx)
 		switch {
@@ -105,7 +108,7 @@ func (a *app) unreadRows(ctx context.Context, s *session, chans []core.Channel) 
 			chans = slices.DeleteFunc(slices.Clone(chans), func(c core.Channel) bool { return !ids[c.ID] }) // tui가 chans를 다시 쓴다
 		}
 	}
-	items, err := a.scanUnread(ctx, s, chans)
+	items, err := a.scanUnread(ctx, s, chans, w)
 	if err != nil {
 		return nil, err
 	}
@@ -116,14 +119,15 @@ func (a *app) unreadRows(ctx context.Context, s *session, chans []core.Channel) 
 
 // scanUnread는 대화를 동시 8개로 훑는다. 첫 오류에서 나머지를 취소한다.
 // 고루틴 안에서는 API만 부른다 — 이름 해석(session 캐시)은 끝난 뒤 한 고루틴에서.
-func (a *app) scanUnread(ctx context.Context, s *session, chans []core.Channel) ([]*unreadItem, error) {
+func (a *app) scanUnread(ctx context.Context, s *session, chans []core.Channel, w *watcher) ([]*unreadItem, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	found := make([]*unreadItem, len(chans))
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	var done atomic.Int32
-	progress := isTTY(a.errw)
+	_, status := a.errw.(statusWriter) // tui 상태줄
+	progress := status || isTTY(a.errw)
 	for i, c := range chans {
 		wg.Go(func() {
 			select {
@@ -132,7 +136,7 @@ func (a *app) scanUnread(ctx context.Context, s *session, chans []core.Channel) 
 				return
 			}
 			defer func() { <-sem }()
-			it, err := s.unreadOne(ctx, c)
+			it, err := s.unreadOne(ctx, c, w)
 			if err != nil {
 				cancel(err)
 				return
@@ -144,7 +148,10 @@ func (a *app) scanUnread(ctx context.Context, s *session, chans []core.Channel) 
 		})
 	}
 	wg.Wait()
-	if progress {
+	switch {
+	case status:
+		fmt.Fprint(a.errw, "\r") // 빈 상태 — 상태줄은 \033[K를 못 지운다
+	case progress:
 		fmt.Fprint(a.errw, "\r\033[K")
 	}
 	if ctx.Err() != nil {
@@ -154,7 +161,8 @@ func (a *app) scanUnread(ctx context.Context, s *session, chans []core.Channel) 
 }
 
 // unreadOne은 last_read 이후 남이 쓴 메시지를 센다(최대 100개). 없으면 nil.
-func (s *session) unreadOne(ctx context.Context, c core.Channel) (*unreadItem, error) {
+// w가 있으면 채널 메시지마다 keep으로 나에게 온 것을 가린다 — history에는 스레드 답글(broadcast 빼고)이 없다.
+func (s *session) unreadOne(ctx context.Context, c core.Channel, w *watcher) (*unreadItem, error) {
 	info, err := waitRateLimit(ctx, func() (*slack.Channel, error) {
 		return s.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{ChannelID: c.ID})
 	})
@@ -178,7 +186,7 @@ func (s *session) unreadOne(ctx context.Context, c core.Channel) (*unreadItem, e
 	if err != nil {
 		return nil, err
 	}
-	it := &unreadItem{ch: c, more: res.HasMore}
+	it := &unreadItem{ch: c, more: res.HasMore, forMe: c.Kind == core.KindIM || c.Kind == core.KindMPIM}
 	for _, m := range res.Messages { // 최신순
 		if m.User == s.prof.UserID || m.SubType == "channel_join" || m.SubType == "channel_leave" {
 			continue
@@ -187,6 +195,13 @@ func (s *session) unreadOne(ctx context.Context, c core.Channel) (*unreadItem, e
 			it.latest = m
 		}
 		it.count++
+		if w != nil && !it.forMe {
+			e := &slackevents.MessageEvent{Channel: c.ID, ChannelType: c.Kind, User: m.User, Text: m.Text,
+				SubType: m.SubType, Message: &m.Msg, Root: m.Root}
+			if _, alert := w.keep(e); alert {
+				it.forMe, it.latest = true, m
+			}
+		}
 	}
 	if it.count == 0 {
 		return nil, nil
@@ -196,37 +211,13 @@ func (s *session) unreadOne(ctx context.Context, c core.Channel) (*unreadItem, e
 
 // clientCounts는 비공식 client.counts로 안 읽은 대화 ID를 받는다(session 토큰만). 응답에 없는 대화는 읽음으로 본다.
 func (s *session) clientCounts(ctx context.Context) (map[string]bool, error) {
-	base := cmp.Or(apiURL, strings.TrimRight(s.prof.URL, "/")+"/api/")
-	req, err := http.NewRequestWithContext(ctx, "POST", base+"client.counts", strings.NewReader(url.Values{"token": {s.token}}.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	if apiURL == "" && !isSlackURL(req.URL) {
-		return nil, fmt.Errorf("Slack 주소가 아니다: %q", s.prof.URL) // 토큰을 실어 보내므로
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	res, err := s.httpc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", res.StatusCode)
-	}
 	type entry struct {
 		ID         string `json:"id"`
 		HasUnreads bool   `json:"has_unreads"`
 	}
-	var body struct {
-		OK                   bool
-		Error                string
-		Channels, MPIMs, IMs []entry
-	}
-	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+	var body struct{ Channels, MPIMs, IMs []entry }
+	if err := s.private(ctx, "client.counts", &body); err != nil {
 		return nil, err
-	}
-	if !body.OK {
-		return nil, errors.New(cmp.Or(body.Error, "ok=false"))
 	}
 	ids := map[string]bool{}
 	for _, e := range slices.Concat(body.Channels, body.MPIMs, body.IMs) {
@@ -235,6 +226,68 @@ func (s *session) clientCounts(ctx context.Context) (map[string]bool, error) {
 		}
 	}
 	return ids, nil
+}
+
+// mutedChannels는 뮤트한 채널이다(session 토큰만 — xoxp는 missing_scope). 비공식 users.prefs.get의
+// all_notifications_prefs(JSON 문자열)에만 온다(2026-10-14 실측, 옛 muted_channels 키는 없다).
+func (s *session) mutedChannels(ctx context.Context) (map[string]bool, error) {
+	var body struct {
+		Prefs struct {
+			All string `json:"all_notifications_prefs"`
+		}
+	}
+	if err := s.private(ctx, "users.prefs.get", &body); err != nil {
+		return nil, err
+	}
+	var all struct {
+		Channels map[string]struct{ Muted bool }
+	}
+	if err := json.Unmarshal([]byte(body.Prefs.All), &all); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for id, c := range all.Channels {
+		if c.Muted {
+			out[id] = true
+		}
+	}
+	return out, nil
+}
+
+// private는 slack-go에 없는 비공식 메서드를 팀 주소로 POST해 v에 푼다. ok:false는 오류.
+func (s *session) private(ctx context.Context, method string, v any) error {
+	base := cmp.Or(apiURL, strings.TrimRight(s.prof.URL, "/")+"/api/")
+	req, err := http.NewRequestWithContext(ctx, "POST", base+method, strings.NewReader(url.Values{"token": {s.token}}.Encode()))
+	if err != nil {
+		return err
+	}
+	if apiURL == "" && !isSlackURL(req.URL) {
+		return fmt.Errorf("Slack 주소가 아니다: %q", s.prof.URL) // 토큰을 실어 보내므로
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := s.httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", res.StatusCode)
+	}
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
+	var st struct {
+		OK    bool
+		Error string
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return err
+	}
+	if !st.OK {
+		return errors.New(cmp.Or(st.Error, "ok=false"))
+	}
+	return json.Unmarshal(b, v)
 }
 
 // waitRateLimit은 slack-go의 재시도(3회)가 끝난 뒤에도 429면 Retry-After만큼 기다렸다 다시 부른다.

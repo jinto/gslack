@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -39,6 +40,7 @@ type fakeSlack struct {
 	counts    string   // client.counts 응답("500"이면 HTTP 500)
 	rtm       []string // /rtm 웹소켓으로 hello 뒤에 보낼 이벤트
 	rtmAuth   string   // rtm.connect 오류 코드
+	prefs     string   // users.prefs.get 응답(비면 unknown_method)
 }
 
 func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +167,8 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = `{"ok":true,"channel":"` + r.Form.Get("channel") + `","ts":"1700000099.000000","message":` + string(m) + `}`
 	case "users.getPresence":
 		body = `{"ok":true,"presence":"active"}`
+	case "users.prefs.get":
+		body = cmp.Or(f.prefs, `{"ok":false,"error":"unknown_method"}`)
 	case "client.counts":
 		if f.counts == "500" {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -235,6 +239,18 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				{"ts":"1700000002.000000","user":"U1AAAAAAAA","text":"","blocks":[{"type":"rich_text","elements":[{"type":"rich_text_section",
 				 "elements":[{"type":"usergroup","usergroup_id":"S1DEVSDEVS"},{"type":"text","text":" "},{"type":"broadcast","range":"here"}]}]}]},
 				{"ts":"1700000001.000000","user":"U1AAAAAAAA","text":"\n\n    go test\n  \n"}]}`
+			break
+		}
+		if r.Form.Get("channel") == "C3MENTION0" { // 안 읽은 것 가운데 멘션
+			body = `{"ok":true,"messages":[{"ts":"1700000006.000000","user":"U1AAAAAAAA","text":"plain"},
+				{"ts":"1700000005.000000","user":"U1AAAAAAAA","text":"<@U0MEMEMEME> 봐 줘"},
+				{"ts":"1700000004.000000","user":"U2TTTTTTTT","text":"plain"}]}`
+			break
+		}
+		if r.Form.Get("channel") == "C4BROADCST" { // 멘션 없이 내 스레드의 broadcast만
+			body = `{"ok":true,"messages":[{"ts":"1700000006.000000","user":"U1AAAAAAAA","text":"plain"},
+				{"ts":"1700000004.000000","user":"U2TTTTTTTT","text":"bc","subtype":"thread_broadcast","thread_ts":"1700000003.000000",
+				 "root":{"ts":"1700000003.000000","user":"U0MEMEMEME"}}]}`
 			break
 		}
 		if r.Form.Get("channel") == "D3UNREADDM" { // 본인 메시지와 입장은 세지 않는다
