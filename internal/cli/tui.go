@@ -193,7 +193,7 @@ func (m *tuiModel) Init() tea.Cmd {
 // 잠금 없이 되는 이유: 캐시 쓰기는 소스를 띄우기 전에 끝나고, 훑기(unreadRows)·소스는 캐시를 읽기만 한다.
 // 그래서 Update는 첫 liveMsg부터 세션을 써도 된다. R에서 캐시를 다시 받게 바꾸면 이것이 깨진다.
 func (m *tuiModel) fill(channels bool) tea.Cmd {
-	m.filling, m.status, m.progress = true, "", ""
+	m.filling, m.status = true, ""
 	ctx, a, s, w, muted, push, dialer, live := m.ctx, m.a, m.s, m.w, m.muted, m.push, m.dialer, m.liveErr == nil
 	return func() tea.Msg {
 		if w == nil {
@@ -238,7 +238,6 @@ func inbox(w *watcher, muted map[string]bool, e *slackevents.MessageEvent) (show
 
 // fillChannels는 가입 채널을 채운다(user 프로필은 몇 분). 뮤트 채널은 나에게 온 것이 없으면 뺀다.
 func (m *tuiModel) fillChannels() tea.Cmd {
-	m.progress = ""
 	ctx, a, s, w, muted := m.ctx, m.a, m.s, m.w, m.muted
 	return func() tea.Msg { return scan(ctx, a, s, w, muted, core.KindPublic, core.KindPrivate) }
 }
