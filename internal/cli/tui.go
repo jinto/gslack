@@ -15,19 +15,25 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gorilla/websocket"
 	"github.com/jinto/gslack/internal/core"
 	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
 	"github.com/spf13/cobra"
 )
 
 func (a *app) tuiCmd() *cobra.Command {
-	return &cobra.Command{
+	var notify bool
+	cmd := &cobra.Command{
 		Use:   "tui",
-		Short: "받은편지함 화면 — 밀린 DM·그룹 DM을 보고, 답하고(r), 치운다(m)",
+		Short: "받은편지함 화면 — 밀린 DM·그룹 DM과 실시간 DM·멘션을 보고, 답하고(r), 치운다(m)",
 		Args:  cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			if a.asJSON {
 				return usagef("tui는 --json을 쓰지 않는다")
+			}
+			if notify && runtime.GOOS != "darwin" {
+				return usagef("--notify는 macOS에서만")
 			}
 			if !isTTY(a.out) {
 				return usagef("tui는 터미널에서만 연다")
@@ -41,8 +47,14 @@ func (a *app) tuiCmd() *cobra.Command {
 			defer cancel()
 			// 경고·진행 출력은 상태줄로. a.errw는 그대로 둔다 — RunE 오류는 원래 stderr로 가야 하고, 늦게 끝난 Cmd가 읽어도 경합이 없다.
 			ta := *a
-			p := tea.NewProgram(newTUI(ctx, &ta, s), tea.WithContext(ctx), tea.WithAltScreen(), tea.WithOutput(a.out))
+			m := newTUI(ctx, &ta, s)
+			if m.liveErr != nil && s.prof.Kind == "session" { // 쿠키 없음 — 앱 토큰 없는 user 프로필만 실시간 없이 연다
+				return m.liveErr
+			}
+			m.notify = notify
+			p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithOutput(a.out))
 			ta.errw = statusWriter(p.Send)
+			m.push = p.Send
 			_, err = p.Run()
 			switch {
 			case errors.Is(err, tea.ErrInterrupted):
@@ -53,6 +65,8 @@ func (a *app) tuiCmd() *cobra.Command {
 			return err
 		}),
 	}
+	cmd.Flags().BoolVar(&notify, "notify", false, "새로 온 것이면 macOS 알림")
+	return cmd
 }
 
 // statusWriter는 a.errw 대신 상태줄로 보낸다. Send는 Update가 끝나길 기다리므로 Update 안에서는 a.errw에 쓰지 않는다.
@@ -66,7 +80,7 @@ func (w statusWriter) Write(p []byte) (int, error) {
 type (
 	statusMsg string
 	filledMsg struct {
-		chans []core.Channel
+		chans []core.Channel // 실패해도 싣는다 — 다음 R이 첫 채우기(newWatcher·소스)를 다시 타지 않게
 		items []*unreadItem
 		err   error
 	}
@@ -80,13 +94,16 @@ type (
 	}
 	sentMsg struct {
 		row          tuiRow
-		ts           string // 보낸 메시지
+		ts           string // 치운 데까지 — DM 본문이면 보낸 메시지, 스레드·채널 줄이면 그 줄의 latest(보내는 사이 온 것은 남긴다)
 		err, markErr error
 	}
 	markedMsg struct {
 		ch, ts string
 		err    error
 	}
+	liveMsg        struct{ e *slackevents.MessageEvent } // keep의 alert를 통과한 것만 온다
+	reconnectedMsg struct{}
+	liveDownMsg    struct{ err error } // 실시간 소스가 끝났다
 )
 
 type tuiRow struct {
@@ -129,6 +146,13 @@ type tuiModel struct {
 	reply   *tuiRow // 답장 입력 중 — 값 복사라 입력 중 filledMsg가 줄을 바꿔도 대상은 그대로
 	sending bool
 	status  string
+
+	dialer  *websocket.Dialer
+	liveErr error                       // 실시간이 꺼진 이유 — nil이면 켜짐
+	push    func(tea.Msg)               // 소스 고루틴 → Update(p.Send)
+	notify  bool                        // --notify
+	pending []*slackevents.MessageEvent // 채우는 중 온 것 — 채우기가 끝나면 다시 적용(ts 가드로 한 번만 센다)
+	refill  bool                        // 채우는 중 다시 연결됨 — 끝나면 한 번 더
 }
 
 func newTUI(ctx context.Context, a *app, s *session) *tuiModel {
@@ -137,27 +161,47 @@ func newTUI(ctx context.Context, a *app, s *session) *tuiModel {
 		PageDown: key.NewBinding(key.WithKeys("pgdown", " ")),
 		PageUp:   key.NewBinding(key.WithKeys("pgup")),
 	}
-	return &tuiModel{ctx: ctx, a: a, s: s, vp: vp, ti: textinput.New()}
+	m := &tuiModel{ctx: ctx, a: a, s: s, vp: vp, ti: textinput.New()}
+	m.dialer, m.liveErr = liveDialer(s)
+	return m
 }
 
-func (m *tuiModel) Init() tea.Cmd { return m.fill() }
+func (m *tuiModel) Init() tea.Cmd {
+	cmd := m.fill()
+	if m.liveErr != nil { // 이유는 처음 한 번, 그 뒤엔 상태줄 앞 "실시간 꺼짐"
+		m.status = m.liveErr.Error()
+	}
+	return cmd
+}
 
+// fill: 첫 채우기는 세션 캐시를 채우고(newWatcher) 실시간 소스를 띄운 뒤 훑는다 — 채우는 동안 온 것도 잡게.
+// 잠금 없이 되는 이유: 캐시 쓰기는 소스를 띄우기 전에 끝나고, 훑기(unreadRows)·소스는 캐시를 쓰지 않는다.
+// 그래서 Update는 첫 liveMsg부터 세션을 써도 된다. R에서 캐시를 다시 받게 바꾸면 이것이 깨진다.
 func (m *tuiModel) fill() tea.Cmd {
 	m.filling, m.status = true, ""
-	ctx, a, s, chans := m.ctx, m.a, m.s, m.chans
+	ctx, a, s, chans, push, dialer, live := m.ctx, m.a, m.s, m.chans, m.push, m.dialer, m.liveErr == nil
 	return func() tea.Msg {
 		if chans == nil {
-			if err := s.loadChannels(ctx, false); err != nil {
+			w, err := a.newWatcher(ctx, s)
+			if err != nil {
 				return filledMsg{err: err}
-			}
-			if err := s.loadUsers(ctx, false); err != nil { // 이름 프리페치일 뿐 — 실패해도 이름은 ID로 나온다(unread와 같게)
-				fmt.Fprintf(a.errw, "사용자 목록 실패(%v)\n", err)
 			}
 			chans = []core.Channel{}
 			for _, c := range s.chans {
 				if c.Kind == core.KindIM || c.Kind == core.KindMPIM {
 					chans = append(chans, c)
 				}
+			}
+			if live {
+				go func() {
+					err := a.listen(ctx, s, dialer, func(e *slackevents.MessageEvent) error {
+						if _, alert := w.keep(e); alert { // 받은편지함 = 나에게 온 것. RTM은 모든 메시지가 와서 여기서 거른다
+							push(liveMsg{e})
+						}
+						return nil
+					}, func() { push(reconnectedMsg{}) })
+					push(liveDownMsg{err})
+				}()
 			}
 		}
 		items, err := a.unreadRows(ctx, s, chans)
@@ -190,7 +234,8 @@ func (m *tuiModel) preview(r tuiRow) tea.Cmd {
 	}
 }
 
-// send는 답장을 보내고 보낸 메시지까지 읽음 처리한다. mark는 응답의 channel·ts로(부모가 지워져 최상위로 갈 수 있다).
+// send는 답장을 보내고 읽음 처리한다. DM 본문이면 보낸 메시지까지(응답의 channel·ts — 부모가 지워져 최상위로 갈 수 있다).
+// 스레드 답글 줄은 mark하지 않고(스레드 읽음은 비공개 API), 채널 줄은 그 메시지까지 — 답글 ts로 mark하면 사이의 안 본 메시지까지 읽음이 된다.
 func (m *tuiModel) send(text string) tea.Cmd {
 	m.sending, m.status = true, ""
 	ctx, s, r := m.ctx, m.s, *m.reply
@@ -203,13 +248,22 @@ func (m *tuiModel) send(text string) tea.Cmd {
 		if err != nil {
 			return sentMsg{row: r, err: err}
 		}
-		return sentMsg{r, ts, nil, s.markRead(ctx, ch, ts)}
+		switch {
+		case r.thread():
+			return sentMsg{r, r.latest.TS, nil, nil}
+		case replyThread(r) == "":
+			return sentMsg{r, ts, nil, s.markRead(ctx, ch, ts)}
+		}
+		return sentMsg{r, r.latest.TS, nil, s.markRead(ctx, r.ch.ID, r.latest.TS)}
 	}
 }
 
-// mark는 줄의 최신 메시지까지, 그 대화를 미리보기로 봤으면 거기 최신까지 치운다.
+// mark는 줄의 최신 메시지까지, 그 대화를 미리보기로 봤으면 거기 최신까지 치운다. 스레드 답글 줄은 TUI 안에서만.
 func (m *tuiModel) mark(r tuiRow) tea.Cmd {
 	m.status = ""
+	if r.thread() {
+		return func() tea.Msg { return markedMsg{r.ch.ID, r.latest.TS, nil} }
+	}
 	ts := r.latest.TS
 	if m.pv.ch == r.ch.ID {
 		ts = max(ts, m.pv.ts) // 고정폭 ts라 문자열 비교
@@ -248,6 +302,108 @@ func (m *tuiModel) setDone(ch, ts string) {
 	if i := slices.IndexFunc(m.rows, func(r tuiRow) bool { return r.ch.ID == ch }); i >= 0 && m.rows[i].latest.TS <= ts {
 		m.rows[i].done = true
 	}
+}
+
+// row는 줄 하나를 만든다 — 이름·본문은 여기서 해석해 둔다(View는 세션을 건드리지 않는다).
+func (m *tuiModel) row(ch core.Channel, count int, more bool, raw slack.Message) tuiRow {
+	r := tuiRow{ch: ch, count: count, more: more, latest: m.s.message(m.ctx, raw, ch.ID)}
+	r.name = "#" + ch.Name
+	if ch.Kind == core.KindIM {
+		r.name = "@" + r.latest.UserName // 실행 중 새로 열린 봇 DM은 ch.User가 없다
+		if ch.User != "" {
+			r.name = "@" + m.s.userName(m.ctx, ch.User)
+		}
+	}
+	r.text = m.s.render(m.ctx, r.latest.Text)
+	return r
+}
+
+func (m *tuiModel) rowIndex(ch string) int {
+	return slices.IndexFunc(m.rows, func(r tuiRow) bool { return r.ch.ID == ch })
+}
+
+// setRows는 최신순으로 줄을 바꾸고 커서는 id 대화를 따라간다.
+func (m *tuiModel) setRows(id string, rows []tuiRow) {
+	slices.SortStableFunc(rows, func(x, y tuiRow) int { return strings.Compare(y.latest.TS, x.latest.TS) })
+	m.rows = rows
+	m.cur = max(m.rowIndex(id), 0)
+}
+
+func (m *tuiModel) curID() string {
+	if len(m.rows) == 0 {
+		return ""
+	}
+	return m.rows[m.cur].ch.ID
+}
+
+// apply는 실시간 메시지를 받은편지함에 합친다. 줄에 이미 같은/더 새 ts가 있으면 무시 — 채우기와 겹친 것·재전송을 두 번 세지 않는다.
+func (m *tuiModel) apply(e *slackevents.MessageEvent, notify bool) tea.Cmd {
+	if m.filling {
+		m.pending = append(m.pending, e)
+	}
+	raw := slack.Message{Msg: *e.Message}
+	i := m.rowIndex(e.Channel)
+	if i >= 0 && raw.Timestamp <= m.rows[i].latest.TS {
+		return nil
+	}
+	id, rows := m.curID(), m.rows
+	var r tuiRow
+	if i < 0 {
+		ch := core.Channel{ID: e.Channel, Name: e.Channel, Kind: e.ChannelType}
+		if j := slices.IndexFunc(m.s.chans, func(c core.Channel) bool { return c.ID == e.Channel }); j >= 0 {
+			ch = m.s.chans[j]
+		} else if ch.Kind == core.KindIM {
+			ch.User = e.User
+		}
+		r = m.row(ch, 1, false, raw)
+	} else {
+		old := m.rows[i]
+		if old.done { // 치운 뒤 온 것만 센다
+			old.count, old.more = 0, false
+		}
+		r = m.row(old.ch, old.count+1, old.more, raw)
+		rows = slices.Delete(slices.Clone(rows), i, i+1)
+	}
+	m.setRows(id, append(rows, r))
+	if !notify || !m.notify {
+		return nil
+	}
+	title, body := r.name, preview(r.text, 120)
+	return func() tea.Msg {
+		if err := notifyFn(title, body); err != nil {
+			return statusMsg("알림 실패: " + err.Error())
+		}
+		return nil
+	}
+}
+
+// merge는 채우기 결과로 줄을 바꾼다. 채우기가 못 보는 줄(history에 없는 스레드 답글, 채우기 대상 밖 대화 — 채널 멘션·실행 중 새 DM)은
+// 안 치웠으면 남기고, 같은 대화면 더 새 쪽을 쓴다. 치운 줄보다 새 것이 없는 채우기 결과(늦게 반영된 mark)는 치운 채로.
+func (m *tuiModel) merge(items []*unreadItem) {
+	rows := make([]tuiRow, 0, len(items))
+	for _, it := range items {
+		rows = append(rows, m.row(it.ch, it.count, it.more, it.latest))
+	}
+	for _, old := range m.rows {
+		i := slices.IndexFunc(rows, func(r tuiRow) bool { return r.ch.ID == old.ch.ID })
+		if old.done {
+			if i >= 0 && rows[i].latest.TS <= old.latest.TS {
+				rows[i].done = true
+			}
+			continue
+		}
+		hidden := old.thread() && old.latest.Subtype != "thread_broadcast"
+		if !hidden && slices.ContainsFunc(m.chans, func(c core.Channel) bool { return c.ID == old.ch.ID }) {
+			continue
+		}
+		switch {
+		case i < 0:
+			rows = append(rows, old)
+		case old.latest.TS > rows[i].latest.TS:
+			rows[i] = old
+		}
+	}
+	m.setRows(m.curID(), rows)
 }
 
 func (m *tuiModel) closeReply() {
@@ -289,26 +445,34 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = strings.TrimSpace(string(msg))
 	case filledMsg:
 		m.filling = false
+		if msg.chans != nil {
+			m.chans = msg.chans
+		}
 		if msg.err != nil {
 			m.status = "채우기 실패: " + msg.err.Error()
+		} else {
+			m.merge(msg.items)
+		}
+		for _, e := range m.pending { // 처음 적용 때 이미 알렸다
+			m.apply(e, false)
+		}
+		m.pending = nil
+		if m.refill {
+			m.refill = false
+			return m, m.fill()
+		}
+	case liveMsg:
+		return m, m.apply(msg.e, true)
+	case reconnectedMsg: // 끊긴 사이 온 DM은 채우기가 되찾는다
+		if m.filling {
+			m.refill = true
 			return m, nil
 		}
-		m.chans = msg.chans
-		var id string
-		if len(m.rows) > 0 {
-			id = m.rows[m.cur].ch.ID
+		return m, m.fill()
+	case liveDownMsg:
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+			m.liveErr, m.status = msg.err, msg.err.Error()
 		}
-		m.rows = m.rows[:0]
-		for _, it := range msg.items {
-			r := tuiRow{ch: it.ch, count: it.count, more: it.more, latest: m.s.message(m.ctx, it.latest, it.ch.ID)}
-			r.name = "#" + it.ch.Name
-			if it.ch.Kind == core.KindIM {
-				r.name = "@" + m.s.userName(m.ctx, it.ch.User)
-			}
-			r.text = m.s.render(m.ctx, r.latest.Text)
-			m.rows = append(m.rows, r)
-		}
-		m.cur = max(slices.IndexFunc(m.rows, func(r tuiRow) bool { return r.ch.ID == id }), 0)
 	case previewMsg:
 		if msg.seq != m.seq {
 			return m, nil
@@ -446,7 +610,7 @@ func (m *tuiModel) View() string {
 			}
 			b.WriteString(l)
 		case i == 0 && !m.filling && m.chans != nil:
-			b.WriteString(" 밀린 DM·그룹 DM이 없다")
+			b.WriteString(" 나에게 온 것이 없다")
 		}
 		b.WriteString("\n")
 	}
@@ -463,6 +627,9 @@ func (m *tuiModel) View() string {
 		status = "보내는 중…"
 	case m.filling:
 		status = "채우는 중…"
+	}
+	if m.liveErr != nil {
+		status = strings.TrimSpace("실시간 꺼짐   " + status)
 	}
 	if status != "" { // 상태가 먼저 — 키 힌트는 잘려도 된다
 		status += "   "

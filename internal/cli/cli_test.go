@@ -271,6 +271,7 @@ func setup(t *testing.T) *fakeSlack {
 	apiURL = srv.URL + "/"
 	t.Cleanup(func() { apiURL = "" })
 	t.Setenv("GSLACK_TOKEN", "xoxp-test")
+	t.Setenv("GSLACK_APP_TOKEN", "") // 셸의 앱 토큰으로 tui가 진짜 Socket Mode에 붙지 않게
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	return f
@@ -1032,24 +1033,27 @@ func TestWatchKeep(t *testing.T) {
 		{"everyone", ev("C1", "channel", "U2", "", "<!everyone>", ""), true, true},
 	}
 	for _, c := range cases {
-		if show, alert := w.keep(c.e, c.e.Text); show != c.show || alert != c.alert {
+		if show, alert := w.keep(c.e); show != c.show || alert != c.alert {
 			t.Errorf("%s: show=%v alert=%v", c.name, show, alert)
 		}
 	}
 	br := ev("C1", "channel", "U2", "thread_broadcast", "ok", "")
 	br.Root = &slack.Msg{User: "UME"}
-	if show, alert := w.keep(br, "ok"); !show || !alert {
+	if show, alert := w.keep(br); !show || !alert {
 		t.Error("내 스레드의 broadcast 답글을 놓쳤다")
 	}
 	w.all = true
-	if show, alert := w.keep(ev("C1", "channel", "U2", "", "hi", ""), "hi"); !show || alert {
+	if show, alert := w.keep(ev("C1", "channel", "U2", "", "hi", "")); !show || alert {
 		t.Errorf("--all: %v %v", show, alert)
 	}
-	if show, _ := w.keep(ev("C9", "channel", "U2", "", "hi", ""), "hi"); show {
+	if show, _ := w.keep(ev("C9", "channel", "U2", "", "hi", "")); show {
 		t.Error("--all인데 미가입 채널이 보인다")
 	}
+	if show, alert := w.keep(&slackevents.MessageEvent{Channel: "D1", ChannelType: "im"}); show || alert {
+		t.Error("message 없는 이벤트")
+	}
 	w.groups = nil // usergroups:read 없음 → 모든 그룹 멘션
-	if _, alert := w.keep(ev("C1", "channel", "U2", "", "<!subteam^SOTHER>", ""), "<!subteam^SOTHER>"); !alert {
+	if _, alert := w.keep(ev("C1", "channel", "U2", "", "<!subteam^SOTHER>", "")); !alert {
 		t.Error("그룹을 모르면 그룹 멘션을 통과시켜야 한다")
 	}
 }

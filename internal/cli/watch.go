@@ -57,21 +57,15 @@ session 프로필(gslack auth import, 또는 GSLACK_TOKEN=xoxc-…와 GSLACK_COO
 			if err != nil {
 				return err
 			}
-			var dialer *websocket.Dialer // session이면 RTM — 앱 설치가 필요 없다
-			if s.prof.Kind == "session" {
-				if dialer, err = rtmDialer(s.cookie); err != nil {
-					return err
-				}
-			} else if s.app == "" {
-				return usagef("watch에는 앱 토큰(xapp-)이 필요하다 — gslack auth login에서 입력하거나 GSLACK_APP_TOKEN(또는 session 프로필: gslack auth import)")
-			}
-			if err := s.loadChannels(ctx, true); err != nil { // 오래 도는 명령이라 캐시를 믿지 않는다
+			dialer, err := liveDialer(s) // 네트워크 전에 — 빨리 실패
+			if err != nil {
 				return err
 			}
-			w := &watcher{me: s.prof.UserID, all: all, member: map[string]bool{}, targets: map[string]bool{}}
-			for _, c := range s.chans {
-				w.member[c.ID] = true
+			w, err := a.newWatcher(ctx, s)
+			if err != nil {
+				return err
 			}
+			w.all = all
 			mode := "DM·멘션·내 스레드 답글"
 			for i, t := range targets {
 				id, err := s.channelID(ctx, t)
@@ -87,20 +81,11 @@ session 프로필(gslack auth import, 또는 GSLACK_TOKEN=xoxc-…와 GSLACK_COO
 			if all {
 				mode += " + 모든 대화"
 			}
-			w.groups, err = s.myGroups(ctx)
-			if se := (slack.SlackErrorResponse{}); errors.As(err, &se) && se.Err == "missing_scope" {
-				fmt.Fprintln(a.errw, "gslack: usergroups:read가 없어 모든 그룹 멘션을 보여 준다(앱 재설치 필요)")
-			} else if err != nil {
-				return err
-			}
-			if err := s.loadUsers(ctx, false); err != nil { // 첫 이벤트 때 users.list 전체를 받지 않게
-				return err
-			}
 			fmt.Fprintf(a.errw, "watching @%s — %s (Ctrl-C로 끝)\n", s.prof.User, mode)
-			if dialer != nil {
-				return a.watchRTM(ctx, s, w, dialer, notify)
-			}
-			return a.watchSocket(ctx, s, w, notify)
+			return a.listen(ctx, s, dialer, func(e *slackevents.MessageEvent) error { return a.emit(ctx, s, w, e, notify) },
+				func() {
+					fmt.Fprintln(a.errw, "gslack: 다시 연결됨 — 끊긴 동안의 메시지는 gslack unread로")
+				})
 		}),
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "가입한 모든 대화의 모든 메시지")
@@ -108,7 +93,51 @@ session 프로필(gslack auth import, 또는 GSLACK_TOKEN=xoxc-…와 GSLACK_COO
 	return cmd
 }
 
-func (a *app) watchSocket(ctx context.Context, s *session, w *watcher, notify bool) error {
+// liveDialer는 실시간 소스를 고른다: session이면 RTM(앱 설치가 필요 없다), 아니면 Socket Mode(nil). 네트워크는 부르지 않는다.
+func liveDialer(s *session) (*websocket.Dialer, error) {
+	if s.prof.Kind == "session" {
+		return rtmDialer(s.cookie)
+	}
+	if s.app == "" {
+		return nil, usagef("실시간에는 앱 토큰(xapp-)이 필요하다 — gslack auth login에서 입력하거나 GSLACK_APP_TOKEN(또는 session 프로필: gslack auth import)")
+	}
+	return nil, nil
+}
+
+// newWatcher는 가입 대화(새로 받는다 — 오래 도는 명령이라 캐시를 믿지 않는다)·내 그룹·사용자 목록을 채운다.
+// 그룹·사용자 실패는 경고만 — 그룹을 모르면 모든 그룹 멘션을, 이름은 users.info로.
+func (a *app) newWatcher(ctx context.Context, s *session) (*watcher, error) {
+	if err := s.loadChannels(ctx, true); err != nil {
+		return nil, err
+	}
+	w := &watcher{me: s.prof.UserID, member: map[string]bool{}, targets: map[string]bool{}}
+	for _, c := range s.chans {
+		w.member[c.ID] = true
+	}
+	var err error
+	if w.groups, err = s.myGroups(ctx); err != nil { // 오류면 nil — 모든 그룹 멘션 통과
+		if se := (slack.SlackErrorResponse{}); errors.As(err, &se) && se.Err == "missing_scope" {
+			fmt.Fprintln(a.errw, "gslack: usergroups:read가 없어 모든 그룹 멘션을 보여 준다(앱 재설치 필요)")
+		} else {
+			fmt.Fprintf(a.errw, "gslack: 그룹 목록 실패(%v) — 모든 그룹 멘션을 보여 준다\n", err)
+		}
+	}
+	if err := s.loadUsers(ctx, false); err != nil { // 첫 이벤트 때 users.list 전체를 받지 않게
+		fmt.Fprintf(a.errw, "gslack: 사용자 목록 실패(%v)\n", err)
+		s.users = map[string]core.User{} // 비워 두면 이름마다 users.list를 다시 부른다 — users.info 폴백으로
+	}
+	return w, nil
+}
+
+// listen은 dialer가 있으면 RTM, 없으면 Socket Mode로 붙어 메시지마다 on을, 다시 붙을 때마다 reconnected를 부른다.
+func (a *app) listen(ctx context.Context, s *session, dialer *websocket.Dialer, on func(*slackevents.MessageEvent) error, reconnected func()) error {
+	if dialer != nil {
+		return a.watchRTM(ctx, s, dialer, on, reconnected)
+	}
+	return a.watchSocket(ctx, s, on, reconnected)
+}
+
+func (a *app) watchSocket(ctx context.Context, s *session, on func(*slackevents.MessageEvent) error, reconnected func()) error {
 	sm := socketmode.New(s.api)
 	errc := make(chan error, 1)
 	go func() { errc <- sm.RunContext(ctx) }()
@@ -137,7 +166,7 @@ func (a *app) watchSocket(ctx context.Context, s *session, w *watcher, notify bo
 			fmt.Fprintf(a.errw, "gslack: 연결 실패 — %s 뒤 다시 시도(%v)\n", d.Backoff, d.ErrorObj)
 		case *socketmode.ConnectedEvent:
 			if d.ConnectionCount > 0 {
-				fmt.Fprintln(a.errw, "gslack: 다시 연결됨 — 끊긴 동안의 메시지는 gslack unread로")
+				reconnected()
 			}
 		case slackevents.EventsAPIEvent:
 			// 3초 안에 — 이름 조회(users.info)보다 먼저. ctx를 넘겨야 끊긴 연결에서 막혀도 Ctrl-C가 듣는다
@@ -154,7 +183,7 @@ func (a *app) watchSocket(ctx context.Context, s *session, w *watcher, notify bo
 				seen[cb.EventID] = true
 			}
 			if e, ok := d.InnerEvent.Data.(*slackevents.MessageEvent); ok {
-				if err := a.emit(ctx, s, w, e, notify); err != nil {
+				if err := on(e); err != nil {
 					return err
 				}
 			}
@@ -163,7 +192,7 @@ func (a *app) watchSocket(ctx context.Context, s *session, w *watcher, notify bo
 }
 
 // watchRTM은 session(xoxc+d)으로 RTM에 붙는다. 이벤트 채널은 닫히지 않으므로 ctx와 인증 실패로만 끝난다.
-func (a *app) watchRTM(ctx context.Context, s *session, w *watcher, dialer *websocket.Dialer, notify bool) error {
+func (a *app) watchRTM(ctx context.Context, s *session, dialer *websocket.Dialer, on func(*slackevents.MessageEvent) error, reconnected func()) error {
 	r := s.api.NewRTM(slack.RTMOptionDialer(dialer))
 	go r.ManageConnection()
 	kind := make(map[string]string, len(s.chans)) // RTM 메시지에는 channel_type이 없다
@@ -187,7 +216,7 @@ func (a *app) watchRTM(ctx context.Context, s *session, w *watcher, dialer *webs
 			fmt.Fprintf(a.errw, "gslack: 연결 실패 — %s 뒤 다시 시도(%v)\n", d.Backoff, d.ErrorObj)
 		case *slack.ConnectedEvent:
 			if d.ConnectionCount > 0 {
-				fmt.Fprintln(a.errw, "gslack: 다시 연결됨 — 끊긴 동안의 메시지는 gslack unread로")
+				reconnected()
 			}
 		case *slack.InvalidAuthEvent: // 이 뒤 slack-go는 조용히 멈춘다
 			return slack.SlackErrorResponse{Err: "invalid_auth"}
@@ -198,7 +227,7 @@ func (a *app) watchRTM(ctx context.Context, s *session, w *watcher, dialer *webs
 			}
 			e := &slackevents.MessageEvent{Channel: d.Channel, ChannelType: typ, User: d.User, Text: d.Text,
 				SubType: d.SubType, Message: &d.Msg, Root: d.Root}
-			if err := a.emit(ctx, s, w, e, notify); err != nil {
+			if err := on(e); err != nil {
 				return err
 			}
 		}
@@ -217,14 +246,11 @@ func refused(err error) error {
 
 // emit은 걸러서 한 줄(--json이면 NDJSON)을 내고, 나에게 온 것이면 알린다.
 func (a *app) emit(ctx context.Context, s *session, w *watcher, e *slackevents.MessageEvent, notify bool) error {
-	if e.Message == nil {
-		return nil
-	}
-	raw := slack.Message{Msg: *e.Message}
-	show, alert := w.keep(e, cmp.Or(e.Text, fallbackText(raw)))
+	show, alert := w.keep(e)
 	if !show {
 		return nil
 	}
+	raw := slack.Message{Msg: *e.Message}
 	m := s.message(ctx, raw, e.Channel)
 	where, body := s.where(e, m), preview(withTags(s.render(ctx, m.Text), m), 120)
 	if m.ThreadTS != "" && m.ThreadTS != m.TS {
@@ -307,7 +333,10 @@ type watcher struct {
 }
 
 // keep은 보여 줄지(show)와 나에게 온 것(DM·멘션·내 스레드 답글)인지(alert)를 정한다.
-func (w *watcher) keep(e *slackevents.MessageEvent, text string) (show, alert bool) {
+func (w *watcher) keep(e *slackevents.MessageEvent) (show, alert bool) {
+	if e.Message == nil {
+		return false, false
+	}
 	switch e.SubType {
 	case "", "thread_broadcast", "bot_message", "file_share", "me_message":
 	default: // message_changed·deleted, channel_join 등
@@ -320,6 +349,7 @@ func (w *watcher) keep(e *slackevents.MessageEvent, text string) (show, alert bo
 		e.Root != nil && e.Root.User == w.me { // thread_broadcast에는 parent_user_id 대신 root가 온다
 		return true, true
 	}
+	text := cmp.Or(e.Text, fallbackText(slack.Message{Msg: *e.Message}))
 	for _, m := range mentionRe.FindAllStringSubmatch(text, -1) {
 		tok := m[1]
 		switch {
