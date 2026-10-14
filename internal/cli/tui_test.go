@@ -648,9 +648,14 @@ func TestTUIFillPhases(t *testing.T) {
 	if v := m.View(); !strings.Contains(v, "확인 중 1/3") || strings.Contains(v, "채우는 중…") {
 		t.Errorf("채우는 중 상태줄:\n%s", v)
 	}
+	m.Update(statusMsg("전송 여부 불확실"))
+	m.Update(statusMsg("\r확인 중 2/3")) // 진행이 경고를 덮지 않는다
+	if v := m.View(); !strings.Contains(v, "전송 여부 불확실") {
+		t.Errorf("진행이 상태를 덮음:\n%s", v)
+	}
 	m.Update(last)
-	if m.status != "" {
-		t.Errorf("끝난 진행이 남음: %q", m.status)
+	if m.progress != "" || m.status != "전송 여부 불확실" {
+		t.Errorf("끝난 진행: %q 상태 %q", m.progress, m.status)
 	}
 }
 
@@ -666,9 +671,16 @@ func TestTUIScan(t *testing.T) {
 	if err := s.loadChannels(ctx, false); err != nil {
 		t.Fatal(err)
 	}
-	msg := scan(ctx, a, s, nil, map[string]bool{"C1GENERAL0": true}, core.KindPublic, core.KindPrivate)
-	if len(msg.scope) != 3 || len(msg.items) != 1 || msg.items[0].ch.ID != "G1NEVERREAD" {
-		t.Errorf("뮤트: scope %v items %v", msg.scope, msg.items)
+	s.chans = append(s.chans, core.Channel{ID: "C3MENTION0", Kind: core.KindPublic})
+	w := &watcher{me: "U0MEMEMEME", member: map[string]bool{"C3MENTION0": true}}
+	msg := scan(ctx, a, s, w, map[string]bool{"C1GENERAL0": true, "C3MENTION0": true}, core.KindPublic, core.KindPrivate)
+	got := []string{}
+	for _, it := range msg.items {
+		got = append(got, it.ch.ID)
+	}
+	slices.Sort(got)
+	if len(msg.scope) != 4 || strings.Join(got, ",") != "C3MENTION0,G1NEVERREAD" { // 뮤트여도 멘션은 남는다
+		t.Errorf("뮤트: scope %v items %v", msg.scope, got)
 	}
 
 	t.Setenv("GSLACK_TOKEN", "xoxc-test")
@@ -721,10 +733,29 @@ func TestMutedChannels(t *testing.T) {
 	if got, err := s.mutedChannels(ctx); err != nil || len(got) != 1 || !got["C1"] {
 		t.Errorf("뮤트: %v %v", got, err)
 	}
+	f.prefs = `{"ok":true,"prefs":{}}`
+	if got, err := s.mutedChannels(ctx); err != nil || len(got) != 0 {
+		t.Errorf("설정 없음: %v %v", got, err)
+	}
 	for _, body := range []string{`{"ok":true,"prefs":{"all_notifications_prefs":"{"}}`, `{"ok":false,"error":"missing_scope"}`} {
 		f.prefs = body
 		if _, err := s.mutedChannels(ctx); err == nil {
 			t.Errorf("%s: 오류가 아니다", body)
 		}
+	}
+}
+
+// TestTUIMergeDoneAcrossPhases: 치운 채널 줄은 DM 단계를 건너 채널 단계까지 가서 늦게 반영된 mark를 가린다.
+func TestTUIMergeDoneAcrossPhases(t *testing.T) {
+	_, m := filledTUI(t)
+	c1 := at(m, "C1GENERAL0")
+	m.rows[m.rowIndex("C1GENERAL0")].done = true
+	m.filling = true
+	m.Update(filledMsg{scope: dms(m), items: []*unreadItem{{ch: m.rows[0].ch, count: 1, forMe: true,
+		latest: slack.Message{Msg: slack.Msg{Timestamp: m.rows[0].latest.TS, User: "U3HHHHHHHH"}}}}, next: true})
+	m.Update(filledMsg{scope: []core.Channel{c1.ch}, items: []*unreadItem{{ch: c1.ch, count: 2,
+		latest: slack.Message{Msg: slack.Msg{Timestamp: c1.latest.TS, User: "U1AAAAAAAA"}}}}})
+	if r := at(m, "C1GENERAL0"); !r.done {
+		t.Errorf("치운 줄이 되살아남: %+v", r)
 	}
 }

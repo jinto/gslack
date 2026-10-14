@@ -241,10 +241,10 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				{"ts":"1700000001.000000","user":"U1AAAAAAAA","text":"\n\n    go test\n  \n"}]}`
 			break
 		}
-		if r.Form.Get("channel") == "C3MENTION0" { // 안 읽은 것 가운데 멘션
+		if r.Form.Get("channel") == "C3MENTION0" { // 안 읽은 것 가운데 멘션 둘 — 더 새 것이 latest
 			body = `{"ok":true,"messages":[{"ts":"1700000006.000000","user":"U1AAAAAAAA","text":"plain"},
 				{"ts":"1700000005.000000","user":"U1AAAAAAAA","text":"<@U0MEMEMEME> 봐 줘"},
-				{"ts":"1700000004.000000","user":"U2TTTTTTTT","text":"plain"}]}`
+				{"ts":"1700000004.000000","user":"U2TTTTTTTT","text":"<@U0MEMEMEME> 옛것"}]}`
 			break
 		}
 		if r.Form.Get("channel") == "C4BROADCST" { // 멘션 없이 내 스레드의 broadcast만

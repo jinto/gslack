@@ -239,6 +239,9 @@ func (s *session) mutedChannels(ctx context.Context) (map[string]bool, error) {
 	if err := s.private(ctx, "users.prefs.get", &body); err != nil {
 		return nil, err
 	}
+	if body.Prefs.All == "" { // 알림 설정을 한 번도 안 바꿈
+		return nil, nil
+	}
 	var all struct {
 		Channels map[string]struct{ Muted bool }
 	}

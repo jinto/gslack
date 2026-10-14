@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -142,22 +143,23 @@ func replyThread(r tuiRow) string {
 // tuiModel: Cmd(고루틴)는 Slack API만 부르고, 이름 해석·렌더링은 Update(한 고루틴)에서 한다.
 // 세션 캐시는 첫 채우기 Cmd만 채우고, Update는 첫 filledMsg 전엔 세션을 건드리지 않는다.
 type tuiModel struct {
-	ctx     context.Context
-	a       *app
-	s       *session
-	w       *watcher        // 첫 채우기 전엔 nil
-	muted   map[string]bool // 뮤트 채널(session만) — 첫 채우기 뒤 읽기만
-	rows    []tuiRow
-	cur     int
-	filling bool
-	seq     int                     // Enter마다 늘린다 — 늦게 온 미리보기를 버린다
-	pv      struct{ ch, ts string } // 마지막 history 미리보기의 최신 ts — m이 본 데까지 치운다
-	listH   int
-	vp      viewport.Model
-	ti      textinput.Model
-	reply   *tuiRow // 답장 입력 중 — 값 복사라 입력 중 filledMsg가 줄을 바꿔도 대상은 그대로
-	sending bool
-	status  string
+	ctx      context.Context
+	a        *app
+	s        *session
+	w        *watcher        // 첫 채우기 전엔 nil
+	muted    map[string]bool // 뮤트 채널(session만) — 첫 채우기 뒤 읽기만
+	rows     []tuiRow
+	cur      int
+	filling  bool
+	seq      int                     // Enter마다 늘린다 — 늦게 온 미리보기를 버린다
+	pv       struct{ ch, ts string } // 마지막 history 미리보기의 최신 ts — m이 본 데까지 치운다
+	listH    int
+	vp       viewport.Model
+	ti       textinput.Model
+	reply    *tuiRow // 답장 입력 중 — 값 복사라 입력 중 filledMsg가 줄을 바꿔도 대상은 그대로
+	sending  bool
+	status   string
+	progress string // 채우기 진행("\r확인 중 12/240") — status를 덮지 않게 따로
 
 	dialer  *websocket.Dialer
 	liveErr error         // 실시간이 꺼진 이유 — nil이면 켜짐
@@ -191,7 +193,7 @@ func (m *tuiModel) Init() tea.Cmd {
 // 잠금 없이 되는 이유: 캐시 쓰기는 소스를 띄우기 전에 끝나고, 훑기(unreadRows)·소스는 캐시를 읽기만 한다.
 // 그래서 Update는 첫 liveMsg부터 세션을 써도 된다. R에서 캐시를 다시 받게 바꾸면 이것이 깨진다.
 func (m *tuiModel) fill(channels bool) tea.Cmd {
-	m.filling, m.status = true, ""
+	m.filling, m.status, m.progress = true, "", ""
 	ctx, a, s, w, muted, push, dialer, live := m.ctx, m.a, m.s, m.w, m.muted, m.push, m.dialer, m.liveErr == nil
 	return func() tea.Msg {
 		if w == nil {
@@ -236,6 +238,7 @@ func inbox(w *watcher, muted map[string]bool, e *slackevents.MessageEvent) (show
 
 // fillChannels는 가입 채널을 채운다(user 프로필은 몇 분). 뮤트 채널은 나에게 온 것이 없으면 뺀다.
 func (m *tuiModel) fillChannels() tea.Cmd {
+	m.progress = ""
 	ctx, a, s, w, muted := m.ctx, m.a, m.s, m.w, m.muted
 	return func() tea.Msg { return scan(ctx, a, s, w, muted, core.KindPublic, core.KindPrivate) }
 }
@@ -429,21 +432,26 @@ func (m *tuiModel) apply(e *slackevents.MessageEvent, alert, notify bool) tea.Cm
 
 // merge는 채우기 결과로 줄을 바꾼다. 채우기가 못 보는 줄(history에 없는 스레드 답글, scope 밖 대화 — 다른 단계·실행 중 새 DM)은
 // 안 치웠으면 남기고, 같은 대화면 더 새 쪽을 — "나에게" 줄은 "채널" 채우기 줄에 지지 않는다. 치운 줄보다 새 것이 없는 채우기 결과(늦게 반영된 mark)는 치운 채로.
-func (m *tuiModel) merge(items []*unreadItem, scope []core.Channel) {
+// next(뒤에 채널 단계가 있음)면 scope 밖 치운 줄도 남긴다 — 그 단계가 늦게 반영된 mark를 가려야 한다.
+func (m *tuiModel) merge(items []*unreadItem, scope []core.Channel, next bool) {
 	rows := make([]tuiRow, 0, len(items))
 	for _, it := range items {
 		rows = append(rows, m.row(it.ch, it.count, it.more, it.forMe, it.latest))
 	}
 	for _, old := range m.rows {
 		i := slices.IndexFunc(rows, func(r tuiRow) bool { return r.ch.ID == old.ch.ID })
+		inScope := slices.ContainsFunc(scope, func(c core.Channel) bool { return c.ID == old.ch.ID })
 		if old.done {
-			if i >= 0 && rows[i].latest.TS <= old.latest.TS {
+			switch {
+			case i >= 0 && rows[i].latest.TS <= old.latest.TS:
 				rows[i].done = true
+			case i < 0 && !inScope && next:
+				rows = append(rows, old)
 			}
 			continue
 		}
 		hidden := old.thread() && old.latest.Subtype != "thread_broadcast"
-		if !hidden && slices.ContainsFunc(scope, func(c core.Channel) bool { return c.ID == old.ch.ID }) {
+		if !hidden && inScope {
 			continue
 		}
 		switch {
@@ -492,7 +500,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp.Width, m.vp.Height = msg.Width, max(msg.Height-m.listH-3, 1) // 구분선 둘 + 상태줄
 		m.ti.Width = max(msg.Width-lipgloss.Width(m.ti.Prompt)-1, 1)      // 0이면 긴 본문이 두 줄이 된다
 	case statusMsg:
-		m.status = strings.TrimSpace(string(msg))
+		if strings.HasPrefix(string(msg), "\r") { // scanUnread 진행
+			m.progress = strings.TrimSpace(string(msg))
+		} else {
+			m.status = strings.TrimSpace(string(msg))
+		}
 	case filledMsg:
 		if m.w == nil {
 			m.w, m.muted = msg.w, msg.muted
@@ -500,7 +512,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "채우기 실패: " + msg.err.Error()
 		} else {
-			m.merge(msg.items, msg.scope)
+			m.merge(msg.items, msg.scope, msg.next)
 		}
 		for _, l := range m.pending { // 처음 적용 때 이미 알렸다
 			m.apply(l.e, l.alert, false)
@@ -702,8 +714,8 @@ func (m *tuiModel) View() string {
 	switch {
 	case m.sending:
 		status = "보내는 중…"
-	case m.filling && status == "": // 진행("확인 중 12/240")·경고가 있으면 그것을
-		status = "채우는 중…"
+	case m.filling:
+		status = cmp.Or(status, m.progress, "채우는 중…")
 	}
 	if m.liveErr != nil {
 		status = strings.TrimSpace("실시간 꺼짐   " + status)
