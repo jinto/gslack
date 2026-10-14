@@ -10,6 +10,7 @@
 //	go run . auth      # 0.3 조회
 //	go run . counts    # 0.8 client.counts(비공식)
 //	go run . rtm       # 0.5 RTM(쿠키 Jar 다이얼러) — 메시지 본문은 찍지 않는다
+//	go run . mute      # M4 T4: users.prefs.get의 뮤트 채널, client.counts has_unreads와 겹치는지(xoxp도 시도)
 package main
 
 import (
@@ -31,7 +32,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: spike auth|burst <channel>|unread|watch|counts|rtm")
+		fmt.Fprintln(os.Stderr, "usage: spike auth|burst <channel>|unread|watch|counts|rtm|mute")
 		os.Exit(2)
 	}
 	api := slack.New(mustEnv("GSLACK_TOKEN"), slack.OptionAppLevelToken(os.Getenv("GSLACK_APP_TOKEN")),
@@ -57,6 +58,8 @@ func main() {
 		counts(me.URL)
 	case "rtm":
 		rtm(api, me.UserID)
+	case "mute":
+		mute(me.URL)
 	}
 }
 
@@ -296,5 +299,71 @@ func check(err error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+}
+
+// post는 팀 주소로 token 폼 POST를 보내 JSON을 v에 푼다.
+func post(teamURL, method string, v any) {
+	form := url.Values{"token": {os.Getenv("GSLACK_TOKEN")}}
+	req, _ := http.NewRequest("POST", strings.TrimRight(teamURL, "/")+"/api/"+method, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := (&http.Client{Transport: cookieRT{}, Timeout: 30 * time.Second}).Do(req)
+	check(err)
+	defer res.Body.Close()
+	check(json.NewDecoder(res.Body).Decode(v))
+}
+
+// mute: 뮤트 채널을 어디서 알 수 있는지. 채널 ID와 개수만 찍는다.
+func mute(teamURL string) {
+	var p struct {
+		OK    bool
+		Error string
+		Prefs map[string]any
+	}
+	post(teamURL, "users.prefs.get", &p)
+	fmt.Printf("users.prefs.get ok=%v error=%q prefs %d개\n", p.OK, p.Error, len(p.Prefs))
+	muted := map[string]string{}
+	if s, _ := p.Prefs["muted_channels"].(string); s != "" {
+		for _, id := range strings.Split(s, ",") {
+			muted[id] = "muted_channels"
+		}
+	}
+	fmt.Printf("  muted_channels 키 있음=%v\n", p.Prefs["muted_channels"] != nil)
+	if s, _ := p.Prefs["all_notifications_prefs"].(string); s != "" {
+		var all struct {
+			Channels map[string]struct {
+				Muted bool `json:"muted"`
+			} `json:"channels"`
+		}
+		if err := json.Unmarshal([]byte(s), &all); err != nil {
+			fmt.Println("  all_notifications_prefs 해석 실패:", err)
+		}
+		for id, c := range all.Channels {
+			if c.Muted {
+				muted[id] += "+all_notifications_prefs"
+			}
+		}
+	}
+	src := map[string]int{}
+	for _, v := range muted {
+		src[v]++
+	}
+	fmt.Printf("  뮤트 채널 %d개 — 출처별 %v\n", len(muted), src)
+
+	var c struct {
+		OK       bool
+		Error    string
+		Channels []struct {
+			ID           string `json:"id"`
+			HasUnreads   bool   `json:"has_unreads"`
+			MentionCount int    `json:"mention_count"`
+		}
+	}
+	post(teamURL, "client.counts", &c)
+	fmt.Printf("client.counts ok=%v error=%q channels %d개\n", c.OK, c.Error, len(c.Channels))
+	for _, ch := range c.Channels {
+		if _, ok := muted[ch.ID]; ok {
+			fmt.Printf("  뮤트인데 응답에 있음: %s has_unreads=%v mention=%d\n", ch.ID, ch.HasUnreads, ch.MentionCount)
+		}
 	}
 }
