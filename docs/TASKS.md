@@ -64,7 +64,8 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [x] 2.5 `edit`, `delete`(확인 + `--yes`), `send --at`(RFC3339/`2h`, 미래 검사만, 목록·취소는 Slack 앱)
 
 ## M3. 실시간·마무리
-- [ ] 3.1 이벤트 소스 하나로 Socket Mode(A)와 RTM(B)을 같은 `core.Message` 스트림으로 정규화(3초 ack, `event_id` dedupe, 자기 메시지 필터)
+- [x] 3.1 이벤트 소스 하나로 Socket Mode(A)와 RTM(B)을 같은 `core.Message` 스트림으로 정규화(3초 ack, `event_id` dedupe, 자기 메시지 필터)
+  → M3c c.3에서 구현(RTM 메시지를 `slackevents.MessageEvent`로 바꿔 같은 `keep`·출력)
 - [x] 3.2 `watch`(필터: target, `--mentions-only`(here/channel/subteam 포함), 참여 스레드 답글, changed/deleted 제외, NDJSON, 지수 백오프 재연결)
   → 2026-10-12 watch 스파이크 관찰: (1) user event `message.channels`가 **가입하지 않은 공개 채널**(#random)까지 온다 — 가입 대화로 거를 것. (2) 이벤트가 ts 순서가 아니고, 켜기 전 메시지가 늦게 오기도 한다 — event_id dedupe, 출력은 ts 기준. (3) `<!subteam^S…>` 그룹 멘션을 판정하려면 `usergroups:read`(내가 속한 그룹 목록)가 필요 — manifest에 추가함, 앱 재설치 필요. 20분에 이벤트 125개(대부분 봇 알림) — 기본 필터 필요
 - [x] 3.3 `--notify`: `osascript` 알림(멘션/DM)
@@ -85,7 +86,8 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
   → 2026-10-13 구현 — PLAN-M3c-c2.md. counts의 `has_unreads`로 대상을 줄인 뒤 기존 info+history로 센다(출력 형식 동일). 응답에 없는 대화는 읽음으로 본다. 실패(HTTP·ok:false·디코드)는 경고 후 A, Ctrl-C는 폴백 안 함. 토큰은 https `*.slack.com`으로만. 라이브 비교(xoxp 11 vs session 9): 채널 9개(비공개 2 포함)·개수 모두 일치. xoxp에만 있는 2개는 둘 다 최신 메시지가 Slackbot `huddle_thread`인 DM — Slack은 안 읽음으로 안 친다(session 쪽이 GUI와 같다). A에서 `huddle_thread`도 거르면 같아진다(미적용)
 - [x] c.3 (3.1) `watch`에 RTM 소스: xapp 없이 session으로. 모든 채널 메시지가 오므로 기존 `keep` 필터 재사용, 연결 중 presence active
   → 2026-10-13 구현 — PLAN-M3c-c3.md. session 프로필이면 RTM(xapp 있어도), 아니면 Socket Mode. RTM 메시지를 `slackevents.MessageEvent`로 바꿔 `keep`·출력(`emit`)을 그대로 쓴다. channel_type은 가입 대화 캐시(+`D` 접두)로 채움. 쿠키 Jar `.slack.com`(spike 그대로), 쿠키 없으면 usage 오류. `InvalidAuthEvent`·ok:false 거절은 종료(slack-go는 인증 오류 외엔 영원히 재시도 — Socket Mode에도 같이 적용). 테스트: 가짜 ws 서버 e2e(필터 5종), 인증 실패·거절·쿠키 없음.
-    **라이브 확인 필요(사용자)**: `--profile acme-session watch` 연결·DM 수신, RTM 스레드 답글에 `parent_user_id`/broadcast에 `root`가 오는지(내 스레드 답글 알림), 데스크톱 앱 끈 상태의 presence
+    → 2026-10-14 라이브(사용자, 약 하루): RTM 연결·DM 수신·멘션(스레드 안 ↳ 포함)·`@channel` OK, 재연결 4회 모두 자동. **미확인**: 멘션 없는 내 스레드 답글(`parent_user_id`) — 그룹 멘션과 구분되는 줄이 아직 없음, 데스크톱 앱 끈 상태의 presence
+    개선 후보(요청 오면): 봇 DM 거르기(`--no-bots` — 캘린더·리포트 봇 DM이 많다), DM 줄의 이름 중복(대화 이름 = 보낸 사람이라 두 번 찍힌다). `@channel`/`@here`를 멘션으로 치는 건 설계대로
 - [x] c.4 (0.7) PRD §3·§7에 결과 반영, 명령별 인증·scope 매트릭스
   → 2026-10-13 완료(문서 작업이라 계획 리뷰는 생략하고 Codex·Fable 사실 확인 한 번). §3 A/B 표를 실측으로, 매트릭스는 공통 scope(`*:read users:read`) + 명령별 추가 scope + session 라이브 여부, §7 R1~R9 상태. 틀린 줄 정리(`channels --unread`, `presence`, `--type`, unread "정확"). manifest에서 안 쓰는 `reactions:read emoji:read users:write` 제거(설치된 앱은 그대로 둬도 됨).
     session으로 미확인: mark·send·edit/delete·search·react·status·그룹 멘션 — 쓰기 명령은 셀프 DM으로 사용자가
