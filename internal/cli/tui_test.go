@@ -837,7 +837,7 @@ func TestTUIPreviewReply(t *testing.T) {
 	_, cmd = m.Update(cmd())
 	p, mk := f.reqs["chat.postMessage"], f.reqs["conversations.mark"]
 	if len(p) != 1 || p[0].Get("channel") != "C1GENERAL0" || p[0].Get("thread_ts") != "1700000003.000000" ||
-		len(mk) != 1 || mk[0].Get("ts") != "1700000003.000000" {
+		len(mk) != 1 || mk[0].Get("ts") != "1700000004.000000" { // 옛 메시지에 답해도 미리보기로 본 데까지
 		t.Errorf("보낸 것: %v 읽음 %v", p, mk)
 	}
 	if msg := cmd().(previewMsg); msg.head != "#general" || !m.focus {
@@ -906,5 +906,24 @@ func TestTUILayoutResize(t *testing.T) {
 	}
 	if from, _ := m.pvSpan(); m.sel != 0 || from < m.vp.YOffset {
 		t.Errorf("맨 위로: sel %d 줄 %d 화면 %d", m.sel, from, m.vp.YOffset)
+	}
+}
+
+// TestTUIPreviewBroadcast: broadcast를 골라 답해도 다시 받는 미리보기는 그 대화(스레드로 바뀌지 않음). 강조는 포커스 따라.
+func TestTUIPreviewBroadcast(t *testing.T) {
+	_, m := filledTUI(t)
+	m.Update(press("j"))
+	m.Update(press("enter"))
+	m.Update(previewMsg{seq: m.seq, head: "#general", ch: "C1GENERAL0", msgs: []slack.Message{
+		{Msg: slack.Msg{Timestamp: "1700000003.000000", User: "U1AAAAAAAA", Text: "bc", SubType: "thread_broadcast", ThreadTimestamp: "1700000001.000000"}}}})
+	m.Update(press("r"))
+	typeText(m, "ok")
+	_, cmd := m.Update(press("enter"))
+	if _, cmd = m.Update(cmd()); cmd().(previewMsg).head != "#general" {
+		t.Error("답장 뒤 미리보기가 스레드로 바뀜")
+	}
+	m.Update(press("m"))
+	if m.focus {
+		t.Error("m은 바로 목록으로")
 	}
 }

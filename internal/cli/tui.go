@@ -296,6 +296,10 @@ func (m *tuiModel) preview(r tuiRow) tea.Cmd {
 func (m *tuiModel) send(text string) tea.Cmd {
 	m.sending, m.status = true, ""
 	ctx, s, r := m.ctx, m.s, *m.reply
+	seen := r.latest.TS // 채널 줄은 답한 메시지까지, 그 대화를 미리보기로 봤으면 거기 최신까지(mark와 같은 규칙)
+	if m.pv.ch == r.ch.ID {
+		seen = max(seen, m.pv.ts)
+	}
 	return func() tea.Msg {
 		opts := []slack.MsgOption{slack.MsgOptionText(text, false)}
 		if th := replyThread(r); th != "" {
@@ -311,7 +315,7 @@ func (m *tuiModel) send(text string) tea.Cmd {
 		case replyThread(r) == "":
 			return sentMsg{r, ts, nil, s.markRead(ctx, ch, ts)}
 		}
-		return sentMsg{r, r.latest.TS, nil, s.markRead(ctx, r.ch.ID, r.latest.TS)}
+		return sentMsg{r, seen, nil, s.markRead(ctx, r.ch.ID, seen)}
 	}
 }
 
@@ -567,13 +571,17 @@ func (m *tuiModel) pvSpan() (from, to int) {
 	return from, to
 }
 
-// highlight는 고른 메시지 줄을 뒤집어 내용을 바꾼다. 줄은 평문이라(render는 ANSI를 넣지 않는다) 덧입혀도 깨지지 않는다.
+// highlight는 고른 메시지 줄을 뒤집어(포커스가 목록이면 밑줄) 내용을 바꾼다. 줄은 평문이라(render는 ANSI를 넣지 않는다) 덧입혀도 깨지지 않는다.
 func (m *tuiModel) highlight() {
+	style := curStyle
+	if !m.focus {
+		style = idleStyle
+	}
 	lines := slices.Clone(m.pvLines)
 	if len(m.pvMsgs) > 0 {
 		from, to := m.pvSpan()
 		for k := from; k < to; k++ {
-			lines[k] = curStyle.Render(lines[k])
+			lines[k] = style.Render(lines[k])
 		}
 	}
 	m.vp.SetContent(strings.Join(lines, "\n"))
@@ -677,8 +685,8 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil { // 이전 대화의 미리보기를 남기지 않는다
-			m.pvMsgs = nil
-			m.vp.SetContent(msg.head + "\n미리보기 실패: " + msg.err.Error())
+			m.pvMsgs, m.pvLines = nil, []string{msg.head, "미리보기 실패: " + msg.err.Error()}
+			m.highlight()
 			return m, nil
 		}
 		m.showPreview(msg)
@@ -709,7 +717,6 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setDone(msg.ch, msg.ts)
-		m.focus = false // 치웠으면 다음 줄로 가기 쉽게
 	case tea.KeyMsg:
 		if m.reply != nil {
 			return m.replyKey(msg)
@@ -718,6 +725,7 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc":
 				m.focus = false
+				m.highlight()
 				return m, nil
 			case "j", "down":
 				m.selectMsg(+1)
@@ -749,8 +757,8 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch msg.String() {
 			case "enter":
-				m.focus, m.pvMsgs, m.sel = true, nil, 0
-				m.vp.SetContent(r.name + "\n불러오는 중…")
+				m.focus, m.pvMsgs, m.sel, m.pvLines = true, nil, 0, []string{r.name, "불러오는 중…"}
+				m.highlight()
 				return m, m.preview(r)
 			case "r":
 				m.reply, m.status = &r, ""
@@ -759,12 +767,17 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					arrow = " ↳"
 				}
 				m.ti.Prompt = " 답장 " + r.name + arrow + " > "
-				if m.focus { // 고른 메시지를 보여 준다
-					m.ti.Prompt = fmt.Sprintf(" 답장 %s%s @%s: %s > ", r.name, arrow, r.latest.UserName, preview(m.s.render(m.ctx, r.latest.Text), 30))
+				if m.focus && len(m.pvMsgs) > 0 { // 고른 메시지를 보여 준다(스레드면 가는 곳은 그 스레드)
+					sel := m.pvMsgs[m.sel]
+					m.ti.Prompt = fmt.Sprintf(" 답장 %s%s @%s: %s > ", r.name, arrow, sel.UserName, preview(m.s.render(m.ctx, sel.Text), 30))
 				}
 				m.ti.Width = max(m.vp.Width-lipgloss.Width(m.ti.Prompt)-1, 1)
 				return m, m.ti.Focus()
 			case "m":
+				if m.focus { // 치우면 다음 줄로 가기 쉽게 목록으로 — 응답을 기다리지 않는다(늦은 응답이 새 포커스를 끄지 않게)
+					m.focus = false
+					m.highlight()
+				}
 				return m, m.mark(r)
 			case "o":
 				u := r.latest.Permalink
