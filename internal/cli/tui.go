@@ -140,6 +140,15 @@ func replyThread(r tuiRow) string {
 	return r.latest.TS
 }
 
+// pvSaved는 스레드를 열기 전 채널 미리보기다 — Esc로 받지 않고 되돌린다.
+type pvSaved struct {
+	row  tuiRow
+	raw  []slack.Message
+	msgs []core.Message
+	head string
+	sel  int
+}
+
 // tuiModel: Cmd(고루틴)는 Slack API만 부르고, 이름 해석·렌더링은 Update(한 고루틴)에서 한다.
 // 세션 캐시는 첫 채우기 Cmd만 채우고, Update는 첫 filledMsg 전엔 세션을 건드리지 않는다.
 type tuiModel struct {
@@ -162,6 +171,7 @@ type tuiModel struct {
 	pvTops   []int    // 메시지마다 맨 위로 맞출 줄 — 날짜 줄이 있으면 그 줄
 	pvLines  []string // 홈 없는 미리보기 줄
 	sel      int      // 고른 메시지
+	back     *pvSaved // 미리보기에서 연 스레드면 돌아갈 채널 미리보기 — 포커스 중에만(Esc·m이 지운다)
 	height   int
 	listH    int
 	vp       viewport.Model
@@ -623,11 +633,19 @@ func (m *tuiModel) target(k string) (tuiRow, bool) {
 		}
 		return m.rows[m.cur], true
 	}
+	if k == "m" && m.back != nil { // 연 스레드에서 m은 채널을 치운다
+		return m.back.row, true
+	}
 	r := m.pvRow
 	if len(m.pvMsgs) > 0 && (k == "o" || k == "r" && !r.thread()) {
 		r.latest = m.pvMsgs[m.sel]
 	}
 	return r, true
+}
+
+// canOpen: history 미리보기에서 고른 메시지가 스레드 부모거나 broadcast다(convert가 답글 없는 ThreadTS는 지운다).
+func (m *tuiModel) canOpen() bool {
+	return m.focus && !m.pvRow.thread() && len(m.pvMsgs) > 0 && m.pvMsgs[m.sel].ThreadTS != ""
 }
 
 func (m *tuiModel) selectMsg(d int) {
@@ -740,6 +758,14 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focus {
 			switch msg.String() {
 			case "esc":
+				if b := m.back; b != nil { // 채널로 — 받는 중인 스레드 응답은 seq로 버린다
+					m.seq++
+					m.pvRow, m.pvRaw, m.pvMsgs, m.pvHead, m.sel, m.back = b.row, b.raw, b.msgs, b.head, b.sel, nil
+					m.renderPreview()
+					m.highlight()
+					m.showSel()
+					return m, nil
+				}
 				m.focus = false
 				m.highlight()
 				return m, nil
@@ -750,7 +776,17 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selectMsg(-1)
 				return m, nil
 			case "enter":
-				return m, nil
+				if !m.canOpen() {
+					return m, nil
+				}
+				m.back = &pvSaved{m.pvRow, m.pvRaw, m.pvMsgs, m.pvHead, m.sel}
+				// 가짜 스레드 줄 — pvRow 전용(m.rows에 넣지 않는다). TS가 비어 thread()가 참이고, 답장 뒤 setDone(ch, "")은 아무것도 안 치운다
+				r := m.pvRow
+				r.latest = m.pvMsgs[m.sel]
+				r.latest.TS = ""
+				m.pvMsgs, m.sel, m.pvLines = nil, 0, []string{r.name, "불러오는 중…"}
+				m.highlight()
+				return m, m.preview(r)
 			}
 		}
 		switch msg.String() {
@@ -791,7 +827,7 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.ti.Focus()
 			case "m":
 				if m.focus { // 치우면 다음 줄로 가기 쉽게 목록으로 — 응답을 기다리지 않는다(늦은 응답이 새 포커스를 끄지 않게)
-					m.focus = false
+					m.focus, m.back = false, nil
 					m.highlight()
 				}
 				return m, m.mark(r)
@@ -899,6 +935,12 @@ func (m *tuiModel) View() string {
 		title := "━━ " + m.pvRow.name + " "
 		b.WriteString(line.Render(focusStyle.Render(title+strings.Repeat("━", max(m.vp.Width-lipgloss.Width(title), 0)))) + "\n")
 		keys = "j/k 메시지  r 답장  o 브라우저  m 치우기  Esc 목록  q 끝"
+		switch {
+		case m.back != nil:
+			keys = "j/k 메시지  r 스레드에 답장  o 브라우저  m 채널 치우기  Esc 채널  q 끝"
+		case m.canOpen():
+			keys = "j/k 메시지  Enter 스레드  r 답장  o 브라우저  m 치우기  Esc 목록  q 끝"
+		}
 	} else {
 		b.WriteString(sep + "\n")
 	}

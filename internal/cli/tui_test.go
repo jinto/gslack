@@ -927,3 +927,69 @@ func TestTUIPreviewBroadcast(t *testing.T) {
 		t.Error("m은 바로 목록으로")
 	}
 }
+
+// TestTUIOpenThread: 미리보기에서 답글 달린 메시지·broadcast를 골라 Enter → 그 스레드, Esc → 채널(다시 받지 않음), 다시 Esc → 목록.
+func TestTUIOpenThread(t *testing.T) {
+	f, m := filledTUI(t)
+	m.liveErr, m.status = nil, "" // 상태가 키 힌트를 가린다
+	m.cur = m.rowIndex("C1GENERAL0")
+	m.Update(press("enter"))
+	msg := func(ts, th string, n int) slack.Message {
+		return slack.Message{Msg: slack.Msg{Timestamp: "17000000" + ts + ".000000", ThreadTimestamp: th, ReplyCount: n, User: "U1AAAAAAAA", Text: "x" + ts}}
+	}
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+	m.Update(previewMsg{seq: m.seq, head: "#general", ch: "C1GENERAL0", latest: "1700000004.000000",
+		msgs: []slack.Message{msg("01", "1700000001.000000", 2), msg("03", "1700000001.000000", 0), msg("04", "", 0)}})
+	seq := m.seq
+	if _, cmd := m.Update(press("enter")); cmd != nil || m.seq != seq || strings.Contains(m.View(), "Enter 스레드") {
+		t.Fatal("답글 없는 메시지 Enter")
+	}
+	m.Update(press("k"))
+	m.Update(press("k")) // 부모
+	if !strings.Contains(m.View(), "Enter 스레드") {
+		t.Errorf("힌트: %q", m.View())
+	}
+	_, cmd := m.Update(press("enter"))
+	pm := cmd().(previewMsg)
+	if r := f.reqs["conversations.replies"]; r[len(r)-1].Get("ts") != "1700000001.000000" || pm.head != "#general — 스레드" {
+		t.Fatalf("스레드: %v %q", r, pm.head)
+	}
+	m.Update(pm)
+	if _, c := m.Update(press("enter")); c != nil || !strings.Contains(m.View(), "Esc 채널") {
+		t.Errorf("스레드 안 Enter·힌트: %q", m.View())
+	}
+	mk := len(f.reqs["conversations.mark"])
+	m.Update(press("r"))
+	typeText(m, "ok")
+	_, cmd = m.Update(press("enter"))
+	if _, cmd = m.Update(cmd()); cmd().(previewMsg).head != "#general — 스레드" {
+		t.Error("답장 뒤 미리보기는 그 스레드")
+	}
+	if p := f.reqs["chat.postMessage"]; p[len(p)-1].Get("thread_ts") != "1700000001.000000" || len(f.reqs["conversations.mark"]) != mk {
+		t.Errorf("스레드 답장: %v", p)
+	}
+
+	n := len(f.reqs["conversations.replies"]) + len(f.reqs["conversations.history"])
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 24})
+	m.Update(esc)
+	if from, to := m.pvSpan(); !m.focus || m.back != nil || m.sel != 0 || m.pvRow.thread() || len(m.pvMsgs) != 3 ||
+		from < m.vp.YOffset || to > m.vp.YOffset+m.vp.Height || len(f.reqs["conversations.replies"])+len(f.reqs["conversations.history"]) != n {
+		t.Fatalf("채널로: focus %v sel %d %d-%d 화면 %d", m.focus, m.sel, from, to, m.vp.YOffset)
+	}
+
+	m.Update(press("j")) // broadcast — 받는 중 Esc면 늦은 응답은 버린다
+	_, cmd = m.Update(press("enter"))
+	m.Update(esc)
+	m.Update(cmd())
+	if r := f.reqs["conversations.replies"]; r[len(r)-1].Get("ts") != "1700000001.000000" || m.pvRow.thread() || len(m.pvMsgs) != 3 || m.sel != 1 {
+		t.Errorf("broadcast·늦은 응답: %v %d", r, m.sel)
+	}
+
+	_, cmd = m.Update(press("enter"))
+	m.Update(cmd())
+	_, cmd = m.Update(press("m")) // 스레드 안 m은 채널을 치운다
+	m.Update(cmd())
+	if r := f.reqs["conversations.mark"]; len(r) != mk+1 || r[mk].Get("channel") != "C1GENERAL0" || r[mk].Get("ts") != "1700000004.000000" || m.focus || m.back != nil {
+		t.Errorf("스레드 안 m: %v focus %v", r, m.focus)
+	}
+}
