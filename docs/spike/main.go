@@ -21,6 +21,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: spike auth|burst <channel>|unread|watch|counts|rtm|mute|later [채널ID ts]")
+		fmt.Fprintln(os.Stderr, "usage: spike auth|burst <channel>|unread|watch|counts|rtm|mute|later [permalink | 채널ID ts]")
 		os.Exit(2)
 	}
 	api := slack.New(mustEnv("GSLACK_TOKEN"), slack.OptionAppLevelToken(os.Getenv("GSLACK_APP_TOKEN")),
@@ -374,7 +375,7 @@ func mute(teamURL string) {
 }
 
 // later: Slack "나중에(Later)"를 어떤 API로 넣고 보는지. 개수·종류·ID만 찍는다(본문 없음).
-// 인자 없으면 목록만, 채널ID ts를 주면 saved.add(안 되면 stars.add)로 넣고 다시 본다.
+// 인자 없으면 목록만, permalink(또는 채널ID ts)를 주면 saved.add(안 되면 stars.add)로 넣고 다시 본다.
 func later(teamURL string, args []string) {
 	list := func() {
 		var r struct {
@@ -401,6 +402,14 @@ func later(teamURL string, args []string) {
 		fmt.Printf("stars.list ok=%v error=%q %d개\n", st.OK, st.Error, len(st.Items))
 	}
 	list()
+	if len(args) == 1 { // permalink …/archives/C123/p1700000000123456
+		m := regexp.MustCompile(`/archives/(\w+)/p(\d{10})(\d{6})`).FindStringSubmatch(args[0])
+		if m == nil {
+			fmt.Println("permalink가 아니다")
+			return
+		}
+		args = []string{m[1], m[2] + "." + m[3]}
+	}
 	if len(args) < 2 {
 		return
 	}
