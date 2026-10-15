@@ -108,4 +108,6 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [x] T4 채널 구역: 멘션 없는 가입 채널의 안 읽은 글을 "채널" 구역(흐리게)으로, 꼭 읽을 것은 "나에게" 구역 — 두 단계 채우기, 뮤트 제외(session만), user는 뒤에서 4분
   → 2026-10-15 구현 — PLAN-M4-T4.md. 사용자 결정: 한 목록 두 구역, 뮤트 제외, user도 채널 전부 훑기. spike `mute`: 뮤트는 `users.prefs.get`의 `all_notifications_prefs`에만(session), `client.counts`는 뮤트도 준다, xoxp는 둘 다 거절 → user 프로필은 뮤트를 못 거른다. 채널의 forMe는 안 읽은 history에 `keep` alert가 있으면, 그 줄의 latest는 가장 새 alert(r·o가 그리로). 채우기는 DM → 채널 두 단계(merge는 단계 scope만 따름, 치운 채널 줄은 채널 단계까지 남김), 재연결은 DM만·`R`은 둘 다. 실시간은 `w.all` + `inbox`(뮤트 일반 글·남의 스레드 답글 제외), 알림은 alert만. 안 치운 나에게 줄에 일반 글은 무시(count 덜 셈 — 다음 채우기가 바로잡음). 진행은 status와 따로(`\r` 접두). clientCounts의 요청 부분을 `private()`로 뽑아 users.prefs.get과 같이 씀.
     **라이브 확인 필요(사용자)**: session에서 `#todo_ai_pics_by_user` 같은 굵은 채널이 채널 구역에, 뮤트 채널은 빠지는지. user(Socket Mode)로 일반 채널 글이 실시간으로 들어오는지, 채널 훑기 4분 진행 표시
-- [ ] T5 미리보기 포커스: Enter로 아래에 포커스(표시), j/k로 메시지 고르기·강조·스크롤, r·o는 고른 메시지로, 목록 높이는 포커스 따라
+- [x] T5 미리보기 포커스: Enter로 아래에 포커스(표시), j/k로 메시지 고르기·강조·스크롤, r·o는 고른 메시지로, 목록 높이는 포커스 따라
+  → 2026-10-15 구현 — PLAN-M4-T5.md(리뷰는 Codex·Opus — Fable 한도). 앞서 T4 뒤 미리보기를 안 본 첫 메시지(last_read)부터 보이게 했다(Enter당 conversations.info 1회). 포커스 중 대상은 미리보기한 줄(`pvRow` — 목록이 실시간으로 바뀌어도), 스레드 미리보기의 r은 늘 그 스레드. `printMessages`가 메시지 첫 줄 번호를 돌려준다. 강조는 Reverse(포커스가 목록이면 밑줄), 목록 커서도 같은 규칙. `m`은 누를 때 목록으로. 채널 답장 뒤 읽음은 답한 메시지와 미리보기 최신 중 늦은 것까지. Update는 늘 끝에 layout(목록 줄 수 = View와 같은 listLines).
+    **라이브 확인 필요(사용자)**: 실제 터미널에서 포커스 표시·강조 색, 긴 메시지 스크롤, 한글 폭에서 입력줄 머리

@@ -544,14 +544,15 @@ func (m *tuiModel) showPreview(msg previewMsg) {
 		m.pvStarts[i] = n + 1 // head 한 줄
 	}
 	i := slices.IndexFunc(out, func(cm core.Message) bool { return msg.read != "" && cm.TS > msg.read })
+	m.sel = i
 	if i < 0 {
 		m.sel = max(len(out)-1, 0)
-		m.highlight()
+	}
+	m.highlight()
+	if i < 0 {
 		m.vp.GotoBottom()
 		return
 	}
-	m.sel = i
-	m.highlight()
 	top := m.pvStarts[i]
 	if strings.HasPrefix(m.pvLines[top-1], "── ") {
 		top--
@@ -615,14 +616,6 @@ func (m *tuiModel) target(k string) (tuiRow, bool) {
 		r.latest = m.pvMsgs[m.sel]
 	}
 	return r, true
-}
-
-// again은 답장 뒤 다시 미리보기할 줄이다 — 포커스 중이면 원래 미리보기한 줄(고른 메시지를 넣은 복사본이 broadcast면 스레드로 바뀐다).
-func (m *tuiModel) again(r tuiRow) tuiRow {
-	if m.focus {
-		return m.pvRow
-	}
-	return r
 }
 
 func (m *tuiModel) selectMsg(d int) {
@@ -695,14 +688,17 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case sentMsg:
 		m.sending = false
-		r := msg.row
+		r, pv := msg.row, msg.row
+		if m.focus { // 다시 미리보기는 원래 줄로 — 고른 메시지를 넣은 복사본이 broadcast면 스레드로 바뀐다
+			pv = m.pvRow
+		}
 		switch {
 		case msg.err != nil && rejected(msg.err): // 입력은 남긴다
 			m.status = "보내기 실패: " + msg.err.Error()
 			return m, nil
 		case msg.err != nil:
 			m.status = "전송 여부 불확실 — 미리보기 확인(그대로 Enter면 두 번 갈 수 있다): " + msg.err.Error()
-			return m, m.preview(m.again(r))
+			return m, m.preview(pv)
 		case msg.markErr != nil:
 			m.status = "보냈다 — 읽음 처리 실패(m으로 다시): " + msg.markErr.Error()
 		default:
@@ -710,7 +706,7 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setDone(r.ch.ID, msg.ts)
 		}
 		m.closeReply()
-		return m, m.preview(m.again(r))
+		return m, m.preview(pv)
 	case markedMsg:
 		if msg.err != nil {
 			m.status = "치우기 실패: " + msg.err.Error()
