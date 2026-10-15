@@ -32,7 +32,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: spike auth|burst <channel>|unread|watch|counts|rtm|mute")
+		fmt.Fprintln(os.Stderr, "usage: spike auth|burst <channel>|unread|watch|counts|rtm|mute|later [채널ID ts]")
 		os.Exit(2)
 	}
 	api := slack.New(mustEnv("GSLACK_TOKEN"), slack.OptionAppLevelToken(os.Getenv("GSLACK_APP_TOKEN")),
@@ -60,6 +60,8 @@ func main() {
 		rtm(api, me.UserID)
 	case "mute":
 		mute(me.URL)
+	case "later":
+		later(me.URL, os.Args[2:])
 	}
 }
 
@@ -303,8 +305,11 @@ func check(err error) {
 }
 
 // post는 팀 주소로 token 폼 POST를 보내 JSON을 v에 푼다.
-func post(teamURL, method string, v any) {
+func post(teamURL, method string, v any, kv ...string) {
 	form := url.Values{"token": {os.Getenv("GSLACK_TOKEN")}}
+	for i := 0; i+1 < len(kv); i += 2 {
+		form.Set(kv[i], kv[i+1])
+	}
 	req, _ := http.NewRequest("POST", strings.TrimRight(teamURL, "/")+"/api/"+method, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	res, err := (&http.Client{Transport: cookieRT{}, Timeout: 30 * time.Second}).Do(req)
@@ -366,4 +371,48 @@ func mute(teamURL string) {
 			fmt.Printf("  뮤트인데 응답에 있음: %s has_unreads=%v mention=%d\n", ch.ID, ch.HasUnreads, ch.MentionCount)
 		}
 	}
+}
+
+// later: Slack "나중에(Later)"를 어떤 API로 넣고 보는지. 개수·종류·ID만 찍는다(본문 없음).
+// 인자 없으면 목록만, 채널ID ts를 주면 saved.add(안 되면 stars.add)로 넣고 다시 본다.
+func later(teamURL string, args []string) {
+	list := func() {
+		var r struct {
+			OK         bool
+			Error      string
+			SavedItems []struct {
+				ItemType string `json:"item_type"`
+				ItemID   string `json:"item_id"`
+				TS       string
+				State    string
+			} `json:"saved_items"`
+		}
+		post(teamURL, "saved.list", &r)
+		fmt.Printf("saved.list ok=%v error=%q %d개\n", r.OK, r.Error, len(r.SavedItems))
+		for _, it := range r.SavedItems[:min(5, len(r.SavedItems))] {
+			fmt.Printf("  %s %s %s %s\n", it.ItemType, it.ItemID, it.TS, it.State)
+		}
+		var st struct {
+			OK    bool
+			Error string
+			Items []struct{ Type string }
+		}
+		post(teamURL, "stars.list", &st)
+		fmt.Printf("stars.list ok=%v error=%q %d개\n", st.OK, st.Error, len(st.Items))
+	}
+	list()
+	if len(args) < 2 {
+		return
+	}
+	var r struct {
+		OK    bool
+		Error string
+	}
+	post(teamURL, "saved.add", &r, "item_type", "message", "item_id", args[0], "ts", args[1])
+	fmt.Printf("saved.add ok=%v error=%q\n", r.OK, r.Error)
+	if !r.OK {
+		post(teamURL, "stars.add", &r, "channel", args[0], "timestamp", args[1])
+		fmt.Printf("stars.add ok=%v error=%q\n", r.OK, r.Error)
+	}
+	list()
 }
