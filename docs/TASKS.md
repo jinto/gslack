@@ -115,3 +115,7 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
   → 2026-10-15 구현 — PLAN-M4-T6.md(리뷰 Codex·Opus — Fable 한도). `tuirender.go`: mrkdwn → span(코드·태그를 plane 15 자리표시로 보호, `*_~`는 단어 경계 정규식) → 논리 줄마다 `cellbuf.Wrap`(줄마다 SGR·OSC 8 다시 엶). blocks는 rich_text 말고 다른 블록이 있을 때만, 본문은 `raw.Text`(cm.Text는 첨부 fallback이 들어가 두 번 찍힘). 첨부: 막대(color hex·good/warning/danger, HideColor), author/service_name, 링크 제목, fields, blocks, fallback, footer·시각. 보안: 모든 출력에서 C0/C1/DEL 제거, OSC 8은 http·https·mailto만. 색은 ANSI 16(막대만 hex). 미리보기는 ts 대신 시각, 날짜 줄 위치는 `pvTops`, 폭이 바뀔 때만 다시 그림. `read`는 평문 그대로.
     **라이브 확인 필요(사용자)**: 실제 봇 메시지(Grafana 등) 모양, 링크 Cmd+클릭, 어두운/밝은 테마에서 색
 - [ ] T7 이미지: 올린 이미지·봇 첨부 이미지·아바타 — 반블록 기본, kitty/Ghostty 선명, Quick Look 원본
+  → 2026-10-15 계획 초안 PLAN-M4-T7.md(리뷰 전). 사용자 결정: T8~T10 뒤로 미룬다
+- [ ] T8 스레드 열기: 미리보기에서 답글 달린 메시지를 골라 Enter → 아래 판넬이 그 스레드로, Esc로 채널에 돌아감, r은 스레드 안에
+- [ ] T9 본 데까지 읽음: 미리보기에서 Esc로 목록에 돌아갈 때 j로 지나간 마지막 메시지까지 mark(끝까지 보면 전부, 중간이면 나머지는 안 읽음). `m`은 그대로 전부
+- [ ] T10 나중에 보기: 고른 메시지를 Slack "나중에(Later)"에 넣기 — 비공식 API라 spike로 session 프로필에서 먼저 확인
