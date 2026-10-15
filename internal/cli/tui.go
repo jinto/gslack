@@ -156,9 +156,12 @@ type tuiModel struct {
 	focus    bool                    // 미리보기에 포커스(Enter) — j/k는 메시지, r·o·m은 pvRow, Esc로 목록
 	pvRow    tuiRow                  // 미리보기한 줄 — 포커스 중 목록이 바뀌어도(실시간·채우기) 대상은 그대로
 	pvMsgs   []core.Message          // 미리보기 메시지. 받기 전·실패면 nil
-	pvStarts []int                   // 메시지마다 첫 줄(pvLines 기준)
-	pvLines  []string                // 강조 전 미리보기 줄
-	sel      int                     // 고른 메시지
+	pvRaw    []slack.Message         // 그 원본 — 첨부·블록을 그리고, 폭이 바뀌면 다시 그린다
+	pvHead   string
+	pvStarts []int    // 메시지마다 첫 줄(pvLines 기준)
+	pvTops   []int    // 메시지마다 맨 위로 맞출 줄 — 날짜 줄이 있으면 그 줄
+	pvLines  []string // 홈 없는 미리보기 줄
+	sel      int      // 고른 메시지
 	height   int
 	listH    int
 	vp       viewport.Model
@@ -532,57 +535,66 @@ func (m *tuiModel) layout() {
 
 // showPreview는 받은 미리보기를 둔다. 처음 고른 메시지는 안 본 첫 메시지(맨 위, 바로 앞 날짜 줄까지), 모르면 마지막(맨 아래).
 func (m *tuiModel) showPreview(msg previewMsg) {
-	out := make([]core.Message, len(msg.msgs))
+	m.pvRaw, m.pvHead, m.pvMsgs = msg.msgs, msg.head, make([]core.Message, len(msg.msgs))
 	for i, sm := range msg.msgs {
-		out[i] = m.s.message(m.ctx, sm, msg.ch)
+		m.pvMsgs[i] = m.s.message(m.ctx, sm, msg.ch)
 	}
-	var b strings.Builder
-	starts := m.s.printMessages(m.ctx, &b, out)
-	m.pvLines = append([]string{msg.head}, strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")...)
-	m.pvMsgs, m.pvStarts = out, make([]int, len(starts))
-	for i, n := range starts {
-		m.pvStarts[i] = n + 1 // head 한 줄
-	}
-	i := slices.IndexFunc(out, func(cm core.Message) bool { return msg.read != "" && cm.TS > msg.read })
+	m.renderPreview()
+	i := slices.IndexFunc(m.pvMsgs, func(cm core.Message) bool { return msg.read != "" && cm.TS > msg.read })
 	m.sel = i
 	if i < 0 {
-		m.sel = max(len(out)-1, 0)
+		m.sel = max(len(m.pvMsgs)-1, 0)
 	}
 	m.highlight()
 	if i < 0 {
 		m.vp.GotoBottom()
 		return
 	}
-	top := m.pvStarts[i]
-	if strings.HasPrefix(m.pvLines[top-1], "── ") {
-		top--
-	}
-	m.vp.SetYOffset(top) // 안 본 것이 화면보다 짧으면 viewport가 맨 아래로 맞춘다
+	m.vp.SetYOffset(m.pvTops[i]) // 안 본 것이 화면보다 짧으면 viewport가 맨 아래로 맞춘다
 }
 
-// pvSpan은 고른 메시지의 줄 범위다(다음 날짜 머리줄 제외).
+// renderPreview는 메시지를 지금 폭으로 그린다(홈 2칸을 뺀 폭). 날이 바뀌면 날짜 줄.
+func (m *tuiModel) renderPreview() {
+	width := m.vp.Width - 2
+	m.pvLines = []string{nameBold.Render(m.pvHead)}
+	m.pvStarts, m.pvTops = make([]int, len(m.pvMsgs)), make([]int, len(m.pvMsgs))
+	lastDay := ""
+	for i, cm := range m.pvMsgs {
+		m.pvTops[i] = len(m.pvLines)
+		if day := core.Time(cm.TS).Local().Format("2006-01-02 Mon"); day != lastDay {
+			m.pvLines, lastDay = append(m.pvLines, dimStyle.Render("── "+day+" ──")), day
+		}
+		m.pvStarts[i] = len(m.pvLines)
+		m.pvLines = append(m.pvLines, m.s.tuiLines(m.ctx, m.pvRaw[i], cm, width)...)
+	}
+}
+
+// pvSpan은 고른 메시지의 줄 범위다(다음 메시지의 날짜 줄 제외).
 func (m *tuiModel) pvSpan() (from, to int) {
 	from, to = m.pvStarts[m.sel], len(m.pvLines)
-	if m.sel+1 < len(m.pvStarts) {
-		to = m.pvStarts[m.sel+1]
-		if strings.HasPrefix(m.pvLines[to-1], "── ") {
-			to--
-		}
+	if m.sel+1 < len(m.pvTops) {
+		to = m.pvTops[m.sel+1]
 	}
 	return from, to
 }
 
-// highlight는 고른 메시지 줄을 뒤집어(포커스가 목록이면 밑줄) 내용을 바꾼다. 줄은 평문이라(render는 ANSI를 넣지 않는다) 덧입혀도 깨지지 않는다.
+// highlight는 고른 메시지 줄 왼쪽 홈에 ┃(포커스면 강조색, 목록 포커스면 흐리게)를 붙여 내용을 바꾼다.
+// 줄에 스타일이 있어 Reverse를 덧입히지 않는다.
 func (m *tuiModel) highlight() {
-	style := curStyle
+	mark := selStyle.Render("┃") + " "
 	if !m.focus {
-		style = idleStyle
+		mark = dimStyle.Render("┃") + " "
 	}
-	lines := slices.Clone(m.pvLines)
+	from, to := -1, -1
 	if len(m.pvMsgs) > 0 {
-		from, to := m.pvSpan()
-		for k := from; k < to; k++ {
-			lines[k] = style.Render(lines[k])
+		from, to = m.pvSpan()
+	}
+	lines := make([]string, len(m.pvLines))
+	for k, l := range m.pvLines {
+		if k >= from && k < to {
+			lines[k] = mark + l
+		} else {
+			lines[k] = "  " + l
 		}
 	}
 	m.vp.SetContent(strings.Join(lines, "\n"))
@@ -630,7 +642,15 @@ func (m *tuiModel) selectMsg(d int) {
 func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.height, m.vp.Width = msg.Height, msg.Width
+		m.height = msg.Height
+		if msg.Width != m.vp.Width { // 드래그 중 연달아 온다 — 폭이 바뀔 때만 다시 그린다
+			m.vp.Width = msg.Width
+			if len(m.pvMsgs) > 0 {
+				m.renderPreview()
+				m.highlight()
+				m.showSel()
+			}
+		}
 		m.ti.Width = max(msg.Width-lipgloss.Width(m.ti.Prompt)-1, 1) // 0이면 긴 본문이 두 줄이 된다
 	case statusMsg:
 		if strings.HasPrefix(string(msg), "\r") { // scanUnread 진행
@@ -804,6 +824,7 @@ var (
 	curStyle   = lipgloss.NewStyle().Reverse(true)
 	idleStyle  = lipgloss.NewStyle().Underline(true)
 	focusStyle = lipgloss.NewStyle().Bold(true)
+	selStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
 	doneStyle  = lipgloss.NewStyle().Faint(true)
 )
 

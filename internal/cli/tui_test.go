@@ -772,7 +772,7 @@ func TestTUIPreviewFirstUnread(t *testing.T) {
 		m.Update(previewMsg{seq: m.seq, head: "#general", ch: "C1GENERAL0", msgs: msgs, latest: "1700000029.000000", read: read})
 		return strings.Split(m.vp.View(), "\n")[0]
 	}
-	if top := show("1700000005.000000"); !strings.Contains(top, "1700000006.000000") || m.sel != 6 { // 안 본 게 화면보다 길다
+	if top := show("1700000005.000000"); !strings.HasPrefix(top, "┃") || m.vp.YOffset != m.pvTops[6] || m.sel != 6 { // 안 본 게 화면보다 길다
 		t.Errorf("안 본 첫 메시지가 맨 위가 아니다: %q sel %d", top, m.sel)
 	}
 	if show("1700000025.000000"); !m.vp.AtBottom() || m.sel != 26 { // 짧으면 맨 아래, 고른 것은 그대로
