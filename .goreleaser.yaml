@@ -8,3 +8,16 @@ builds:
     ldflags: ["-s -w -X github.com/jinto/gslack/internal/cli.Version={{.Version}}"]
 archives:
   - formats: [tar.gz]
+# brew install jinto/tap/gslack — 탭 저장소에 쓰는 토큰은 Actions 비밀값 HOMEBREW_TAP_TOKEN.
+# formula라 받은 파일에 격리 표시가 없다(서명 없이도 Gatekeeper가 안 막는다). ponytail: goreleaser v2에서 brews는 deprecated — v3에서 빠지면 homebrew_casks + 격리 해제 훅으로
+brews:
+  - repository:
+      owner: jinto
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/jinto/gslack
+    description: Slack in the terminal — inbox TUI, read, send, threads, search, watch
+    license: MIT
+    test: |
+      system "#{bin}/gslack", "--version"

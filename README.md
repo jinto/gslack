@@ -14,7 +14,8 @@ gslack tui                          # 받은편지함 화면(아래 TUI)
 ## 설치
 
 ```sh
-go install github.com/jinto/gslack@latest   # Go 1.26+
+brew install jinto/tap/gslack                # macOS·Linux
+go install github.com/jinto/gslack@latest    # 또는 Go 1.26+
 ```
 
 또는 [Releases](https://github.com/jinto/gslack/releases)에서 macOS·Linux 바이너리(amd64·arm64). 브라우저로 받은 macOS 바이너리는 서명이 없어 Gatekeeper가 막는다 — `xattr -d com.apple.quarantine gslack`.
