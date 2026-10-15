@@ -257,10 +257,14 @@ func (s *session) mutedChannels(ctx context.Context) (map[string]bool, error) {
 	return out, nil
 }
 
-// private는 slack-go에 없는 비공식 메서드를 팀 주소로 POST해 v에 푼다. ok:false는 오류.
-func (s *session) private(ctx context.Context, method string, v any) error {
+// private는 slack-go에 없는 비공식 메서드를 팀 주소로 POST해 v에 푼다(kv는 폼 키·값 쌍). ok:false는 오류.
+func (s *session) private(ctx context.Context, method string, v any, kv ...string) error {
 	base := cmp.Or(apiURL, strings.TrimRight(s.prof.URL, "/")+"/api/")
-	req, err := http.NewRequestWithContext(ctx, "POST", base+method, strings.NewReader(url.Values{"token": {s.token}}.Encode()))
+	form := url.Values{"token": {s.token}}
+	for i := 0; i+1 < len(kv); i += 2 {
+		form.Set(kv[i], kv[i+1])
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", base+method, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}

@@ -645,7 +645,7 @@ func (m *tuiModel) showSel() {
 	}
 }
 
-// target은 r·m·o의 대상 줄이다. 미리보기 포커스면 미리보기한 줄 — r(history)·o는 고른 메시지로.
+// target은 r·m·o·l의 대상 줄이다. 미리보기 포커스면 미리보기한 줄 — r(history)·o·l은 고른 메시지로.
 // 스레드 미리보기의 r은 고른 것과 상관없이 그 스레드(부모를 골라도 DM 본문으로 새지 않게).
 func (m *tuiModel) target(k string) (tuiRow, bool) {
 	if !m.focus {
@@ -658,7 +658,7 @@ func (m *tuiModel) target(k string) (tuiRow, bool) {
 		return m.back.row, true
 	}
 	r := m.pvRow
-	if len(m.pvMsgs) > 0 && (k == "o" || k == "r" && !r.thread()) {
+	if len(m.pvMsgs) > 0 && (k == "o" || k == "l" || k == "r" && !r.thread()) {
 		r.latest = m.pvMsgs[m.sel]
 	}
 	return r, true
@@ -826,7 +826,7 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.fill(true)
-		case "enter", "r", "m", "o":
+		case "enter", "r", "m", "o", "l":
 			r, ok := m.target(msg.String())
 			if !ok {
 				break
@@ -855,6 +855,17 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.highlight()
 				}
 				return m, m.mark(r)
+			case "l": // Slack "나중에"(saved.add, 비공식) — 이미 있어도 ok. 읽음은 그대로
+				if r.latest.TS == "" { // T8로 연 스레드를 받는 중 — 가짜 줄
+					return m, nil
+				}
+				ctx, s, ch, ts := m.ctx, m.s, r.ch.ID, r.latest.TS
+				return m, func() tea.Msg {
+					if err := s.private(ctx, "saved.add", &struct{}{}, "item_type", "message", "item_id", ch, "ts", ts); err != nil {
+						return statusMsg("나중에 실패: " + err.Error())
+					}
+					return statusMsg("나중에 넣었다")
+				}
 			case "o":
 				u := r.latest.Permalink
 				return m, func() tea.Msg {
@@ -954,16 +965,16 @@ func (m *tuiModel) View() string {
 		b.WriteString("\n")
 	}
 	sep := strings.Repeat("─", m.vp.Width)
-	keys := "j/k 이동  Enter 열기  r 답장  m 치우기  o 브라우저  R 새로고침  q 끝"
+	keys := "j/k 이동  Enter 열기  r 답장  m 치우기  o 브라우저  l 나중에  R 새로고침  q 끝"
 	if m.focus { // 미리보기 위 구분선에 대화 이름 — 포커스가 여기 있다
 		title := "━━ " + m.pvRow.name + " "
 		b.WriteString(line.Render(focusStyle.Render(title+strings.Repeat("━", max(m.vp.Width-lipgloss.Width(title), 0)))) + "\n")
-		keys = "j/k 메시지  r 답장  o 브라우저  m 치우기  Esc 목록  q 끝"
+		keys = "j/k 메시지  r 답장  o 브라우저  l 나중에  m 치우기  Esc 목록  q 끝"
 		switch {
 		case m.back != nil:
-			keys = "j/k 메시지  r 스레드에 답장  o 브라우저  m 채널 치우기  Esc 채널  q 끝"
+			keys = "j/k 메시지  r 스레드에 답장  o 브라우저  l 나중에  m 채널 치우기  Esc 채널  q 끝"
 		case m.canOpen():
-			keys = "j/k 메시지  Enter 스레드  r 답장  o 브라우저  m 치우기  Esc 목록  q 끝"
+			keys = "j/k 메시지  Enter 스레드  r 답장  o 브라우저  l 나중에  m 치우기  Esc 목록  q 끝"
 		}
 	} else {
 		b.WriteString(sep + "\n")

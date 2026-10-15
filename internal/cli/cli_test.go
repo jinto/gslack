@@ -41,6 +41,7 @@ type fakeSlack struct {
 	rtm       []string // /rtm 웹소켓으로 hello 뒤에 보낼 이벤트
 	rtmAuth   string   // rtm.connect 오류 코드
 	prefs     string   // users.prefs.get 응답(비면 unknown_method)
+	saved     string   // saved.add 응답(비면 ok)
 }
 
 func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -167,6 +168,8 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = `{"ok":true,"channel":"` + r.Form.Get("channel") + `","ts":"1700000099.000000","message":` + string(m) + `}`
 	case "users.getPresence":
 		body = `{"ok":true,"presence":"active"}`
+	case "saved.add":
+		body = cmp.Or(f.saved, `{"ok":true}`)
 	case "users.prefs.get":
 		body = cmp.Or(f.prefs, `{"ok":false,"error":"unknown_method"}`)
 	case "client.counts":

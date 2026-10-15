@@ -1091,3 +1091,40 @@ func TestTUISeenMark(t *testing.T) {
 		t.Errorf("스레드 줄: %q", ts)
 	}
 }
+
+// TestTUILater: l은 고른 메시지(목록이면 줄의 latest)를 Slack "나중에"에. 읽음은 그대로.
+func TestTUILater(t *testing.T) {
+	f, m := filledTUI(t)
+	m.cur = m.rowIndex("C1GENERAL0")
+	later := func() string { // l → 보낸 ts("" = 요청 없음)
+		n := len(f.reqs["saved.add"])
+		if _, cmd := m.Update(press("l")); cmd != nil {
+			m.Update(cmd())
+		}
+		if r := f.reqs["saved.add"]; len(r) > n {
+			if r[n].Get("item_type") != "message" || r[n].Get("item_id") != "C1GENERAL0" || r[n].Get("token") == "" {
+				t.Errorf("폼: %v", r[n])
+			}
+			return r[n].Get("ts")
+		}
+		return ""
+	}
+	if ts := later(); ts != m.rows[m.cur].latest.TS || m.status != "나중에 넣었다" {
+		t.Errorf("목록: %q %q", ts, m.status)
+	}
+	_, cmd := m.Update(press("enter"))
+	m.Update(cmd())
+	m.Update(press("j"))
+	if ts := later(); ts != m.pvMsgs[m.sel].TS || m.rows[m.cur].done || len(f.reqs["conversations.mark"]) != 0 {
+		t.Errorf("고른 메시지: %q", ts)
+	}
+	f.saved = `{"ok":false,"error":"not_allowed_token_type"}`
+	if later(); m.status != "나중에 실패: not_allowed_token_type" {
+		t.Errorf("실패: %q", m.status)
+	}
+	m.pvMsgs[m.sel].ThreadTS = m.pvMsgs[m.sel].TS // T8로 연 스레드를 받는 중 — 요청 없음
+	m.Update(press("enter"))
+	if ts := later(); ts != "" {
+		t.Errorf("받는 중: %q", ts)
+	}
+}
