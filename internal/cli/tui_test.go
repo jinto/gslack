@@ -1053,16 +1053,23 @@ func TestTUISeenMark(t *testing.T) {
 	}
 
 	m.rows[m.cur].done = false
-	for _, read := range []string{"", "1700000000.000000"} { // 모름, 20개 넘게 밀림(첫 메시지가 이미 안 읽음)
-		open(read)
-		m.Update(press("j"))
-		if ts := leave(); ts != "" {
-			t.Errorf("read %q: %q", read, ts)
-		}
+	if open(""); leave() != "" { // 읽음 위치 모름
+		t.Error("read 모름")
 	}
-	if !strings.Contains(m.status, "m으로") {
-		t.Errorf("상태: %q", m.status)
+	m.rows[m.cur].latest.TS = "1700000002.000000" // forMe 채널 줄 — latest는 멘션. 멘션 뒤 중간까지만 보면 줄은 남는다
+	open("1700000000.000000")                     // 처음 들어간 작은 채널: 다 안 읽음이어도 20개 안이면 된다
+	m.Update(press("j"))
+	m.Update(press("j"))
+	if ts := leave(); ts != "1700000003.000000" || m.rows[m.cur].done {
+		t.Errorf("forMe 중간: %q done %v", ts, m.rows[m.cur].done)
 	}
+	msgs = slices.Repeat(msgs, 5) // 20개 — 첫 메시지가 이미 안 읽음이면 앞에 더 있을 수 있다
+	open("1700000000.000000")
+	m.Update(press("j"))
+	if ts := leave(); ts != "" || !strings.Contains(m.status, "m으로") {
+		t.Errorf("20개 넘게 밀림: %q %q", ts, m.status)
+	}
+	msgs = msgs[:4]
 
 	open("1700000001.000000") // T8로 연 스레드 안의 이동은 안 센다
 	m.Update(press("k"))

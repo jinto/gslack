@@ -274,6 +274,8 @@ func scan(ctx context.Context, a *app, s *session, w *watcher, muted map[string]
 	return filledMsg{scope: scope, items: items, err: err}
 }
 
+const previewN = 20 // history 미리보기 메시지 수
+
 func (m *tuiModel) preview(r tuiRow) tea.Cmd {
 	m.seq++
 	m.pvRow = r
@@ -287,7 +289,7 @@ func (m *tuiModel) preview(r tuiRow) tea.Cmd {
 			msgs, err := s.replies(ctx, r.ch.ID, r.latest.ThreadTS)
 			return previewMsg{seq, head, r.ch.ID, msgs, err, "", ""}
 		}
-		res, err := s.api.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{ChannelID: r.ch.ID, Limit: 20})
+		res, err := s.api.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{ChannelID: r.ch.ID, Limit: previewN})
 		if err != nil {
 			return previewMsg{seq, head, r.ch.ID, nil, err, "", ""}
 		}
@@ -352,7 +354,7 @@ func (m *tuiModel) markSeen() tea.Cmd {
 	if m.pvRow.thread() || pv.ch != m.pvRow.ch.ID || len(m.pvMsgs) == 0 || pv.read == "" || pv.seen <= pv.read {
 		return nil
 	}
-	if m.pvMsgs[0].TS > pv.read { // 미리보기 앞에도 안 읽은 것이 있을 수 있다 — seen까지 mark하면 그것까지 읽음이 된다
+	if len(m.pvMsgs) == previewN && m.pvMsgs[0].TS > pv.read { // 미리보기 앞에도 안 읽은 것이 있을 수 있다 — seen까지 mark하면 그것까지 읽음이 된다
 		m.status = "앞에 안 본 것이 더 있다 — m으로 치우기"
 		return nil
 	}
@@ -672,7 +674,7 @@ func (m *tuiModel) selectMsg(d int) {
 		return
 	}
 	m.sel = min(max(m.sel+d, 0), len(m.pvMsgs)-1)
-	if !m.pvRow.thread() && m.pv.ch == m.pvRow.ch.ID { // 스레드(T8로 연 것 포함)는 안 센다 — 스레드 읽음은 비공개 API
+	if !m.pvRow.thread() { // 스레드(T8로 연 것 포함)는 안 센다 — 스레드 읽음은 비공개 API. 다른 대화면 markSeen이 거른다
 		m.pv.seen = max(m.pv.seen, m.pvMsgs[m.sel].TS)
 	}
 	m.highlight()
