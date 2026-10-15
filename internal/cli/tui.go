@@ -160,12 +160,12 @@ type tuiModel struct {
 	rows     []tuiRow
 	cur      int
 	filling  bool
-	seq      int                     // Enter마다 늘린다 — 늦게 온 미리보기를 버린다
-	pv       struct{ ch, ts string } // 마지막 history 미리보기의 최신 ts — m이 본 데까지 치운다
-	focus    bool                    // 미리보기에 포커스(Enter) — j/k는 메시지, r·o·m은 pvRow, Esc로 목록
-	pvRow    tuiRow                  // 미리보기한 줄 — 포커스 중 목록이 바뀌어도(실시간·채우기) 대상은 그대로
-	pvMsgs   []core.Message          // 미리보기 메시지. 받기 전·실패면 nil
-	pvRaw    []slack.Message         // 그 원본 — 첨부·블록을 그리고, 폭이 바뀌면 다시 그린다
+	seq      int                                 // Enter마다 늘린다 — 늦게 온 미리보기를 버린다
+	pv       struct{ ch, ts, read, seen string } // 마지막 history 미리보기의 최신 ts(m이 거기까지 치운다), last_read, j/k로 고른 데까지(Esc가 치운다)
+	focus    bool                                // 미리보기에 포커스(Enter) — j/k는 메시지, r·o·m은 pvRow, Esc로 목록
+	pvRow    tuiRow                              // 미리보기한 줄 — 포커스 중 목록이 바뀌어도(실시간·채우기) 대상은 그대로
+	pvMsgs   []core.Message                      // 미리보기 메시지. 받기 전·실패면 nil
+	pvRaw    []slack.Message                     // 그 원본 — 첨부·블록을 그리고, 폭이 바뀌면 다시 그린다
 	pvHead   string
 	pvStarts []int    // 메시지마다 첫 줄(pvLines 기준)
 	pvTops   []int    // 메시지마다 맨 위로 맞출 줄 — 날짜 줄이 있으면 그 줄
@@ -344,6 +344,25 @@ func (m *tuiModel) mark(r tuiRow) tea.Cmd {
 	}
 	ctx, s := m.ctx, m.s
 	return func() tea.Msg { return markedMsg{r.ch.ID, ts, s.markRead(ctx, r.ch.ID, ts)} }
+}
+
+// markSeen은 Esc로 목록에 갈 때 j/k로 고른 데까지 읽음. 끝까지 봤을 때만 줄을 치운다.
+func (m *tuiModel) markSeen() tea.Cmd {
+	pv := m.pv
+	if m.pvRow.thread() || pv.ch != m.pvRow.ch.ID || len(m.pvMsgs) == 0 || pv.read == "" || pv.seen <= pv.read {
+		return nil
+	}
+	if m.pvMsgs[0].TS > pv.read { // 미리보기 앞에도 안 읽은 것이 있을 수 있다 — seen까지 mark하면 그것까지 읽음이 된다
+		m.status = "앞에 안 본 것이 더 있다 — m으로 치우기"
+		return nil
+	}
+	m.pv.read = pv.seen
+	done := "" // 중간이면 줄은 그대로(setDone(ch, "")은 아무것도) — forMe 줄의 latest는 멘션이라 그것과 견주면 안 된다
+	if pv.seen >= pv.ts {
+		done = pv.seen
+	}
+	ctx, s := m.ctx, m.s
+	return func() tea.Msg { return markedMsg{pv.ch, done, s.markRead(ctx, pv.ch, pv.seen)} }
 }
 
 // markRead는 markTo의 "이미 더 뒤까지 읽음" 거절을 성공으로 본다 — 치우려던 것은 이미 치워져 있다.
@@ -653,6 +672,9 @@ func (m *tuiModel) selectMsg(d int) {
 		return
 	}
 	m.sel = min(max(m.sel+d, 0), len(m.pvMsgs)-1)
+	if !m.pvRow.thread() && m.pv.ch == m.pvRow.ch.ID { // 스레드(T8로 연 것 포함)는 안 센다 — 스레드 읽음은 비공개 API
+		m.pv.seen = max(m.pv.seen, m.pvMsgs[m.sel].TS)
+	}
 	m.highlight()
 	m.showSel()
 }
@@ -722,7 +744,7 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.showPreview(msg)
 		if msg.latest != "" {
-			m.pv.ch, m.pv.ts = msg.ch, msg.latest
+			m.pv.ch, m.pv.ts, m.pv.read, m.pv.seen = msg.ch, msg.latest, msg.read, msg.read
 		}
 	case sentMsg:
 		m.sending = false
@@ -768,7 +790,7 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.focus = false
 				m.highlight()
-				return m, nil
+				return m, m.markSeen()
 			case "j", "down":
 				m.selectMsg(+1)
 				return m, nil

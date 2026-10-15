@@ -1009,3 +1009,78 @@ func TestTUIOpenThread(t *testing.T) {
 		t.Error("다시 Esc → 목록")
 	}
 }
+
+// TestTUISeenMark: Esc로 목록에 갈 때 j/k로 고른 데까지 읽음. 끝까지면 줄을 치우고, 중간이면 남긴다.
+func TestTUISeenMark(t *testing.T) {
+	f, m := filledTUI(t)
+	m.cur = m.rowIndex("C1GENERAL0")
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+	var msgs []slack.Message
+	for i := 1; i <= 4; i++ {
+		msgs = append(msgs, slack.Message{Msg: slack.Msg{Timestamp: fmt.Sprintf("170000000%d.000000", i), User: "U1AAAAAAAA", Text: "x"}})
+	}
+	open := func(read string) {
+		m.Update(press("enter"))
+		m.Update(previewMsg{seq: m.seq, head: "#general", ch: "C1GENERAL0", msgs: msgs, latest: "1700000004.000000", read: read})
+	}
+	leave := func() string { // Esc → mark한 ts("" = 요청 없음)
+		n := len(f.reqs["conversations.mark"])
+		_, cmd := m.Update(esc)
+		if cmd != nil {
+			m.Update(cmd())
+		}
+		if mk := f.reqs["conversations.mark"]; len(mk) > n {
+			return mk[n].Get("ts")
+		}
+		return ""
+	}
+	if open("1700000001.000000"); leave() != "" {
+		t.Error("Enter → Esc만으로 읽음")
+	}
+	open("1700000001.000000")
+	m.Update(press("j"))
+	if ts := leave(); ts != "1700000003.000000" || m.rows[m.cur].done {
+		t.Errorf("중간: %q done %v", ts, m.rows[m.cur].done)
+	}
+	open("1700000003.000000")
+	m.Update(press("j"))
+	m.Update(press("k"))
+	if ts := leave(); ts != "1700000004.000000" || !m.rows[m.cur].done {
+		t.Errorf("끝까지: %q done %v", ts, m.rows[m.cur].done)
+	}
+	if ts := leave(); ts != "" { // 목록에서 Esc는 아무것도
+		t.Errorf("다시: %q", ts)
+	}
+
+	m.rows[m.cur].done = false
+	for _, read := range []string{"", "1700000000.000000"} { // 모름, 20개 넘게 밀림(첫 메시지가 이미 안 읽음)
+		open(read)
+		m.Update(press("j"))
+		if ts := leave(); ts != "" {
+			t.Errorf("read %q: %q", read, ts)
+		}
+	}
+	if !strings.Contains(m.status, "m으로") {
+		t.Errorf("상태: %q", m.status)
+	}
+
+	open("1700000001.000000") // T8로 연 스레드 안의 이동은 안 센다
+	m.Update(press("k"))
+	m.Update(press("j")) // …02
+	m.pvMsgs[m.sel].ThreadTS = m.pvMsgs[m.sel].TS
+	_, cmd := m.Update(press("enter"))
+	m.Update(cmd())
+	m.Update(press("j"))
+	m.Update(esc)
+	if ts := leave(); ts != "1700000002.000000" {
+		t.Errorf("스레드 다녀와서: %q", ts)
+	}
+
+	m.rows[m.cur].latest.ThreadTS, m.rows[m.cur].latest.TS = "1700000001.000000", "1700000001.500000" // 스레드 줄 — 앞 채널을 다시 mark하지 않는다
+	_, cmd = m.Update(press("enter"))
+	m.Update(cmd())
+	m.Update(press("j"))
+	if ts := leave(); ts != "" {
+		t.Errorf("스레드 줄: %q", ts)
+	}
+}
