@@ -99,6 +99,7 @@ type (
 		msgs   []slack.Message
 		err    error
 		latest string // history 미리보기의 최신 ts — 스레드 미리보기는 ""(답글 ts로 대화를 mark하면 사이의 안 본 메시지까지 읽음이 된다)
+		read   string // history 미리보기의 last_read — 안 본 첫 메시지를 맨 위에. 모르면 ""(맨 아래)
 	}
 	sentMsg struct {
 		row          tuiRow
@@ -264,18 +265,22 @@ func (m *tuiModel) preview(r tuiRow) tea.Cmd {
 	return func() tea.Msg {
 		if r.thread() {
 			msgs, err := s.replies(ctx, r.ch.ID, r.latest.ThreadTS)
-			return previewMsg{seq, head, r.ch.ID, msgs, err, ""}
+			return previewMsg{seq, head, r.ch.ID, msgs, err, "", ""}
 		}
 		res, err := s.api.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{ChannelID: r.ch.ID, Limit: 20})
 		if err != nil {
-			return previewMsg{seq, head, r.ch.ID, nil, err, ""}
+			return previewMsg{seq, head, r.ch.ID, nil, err, "", ""}
+		}
+		var read string
+		if info, err := s.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{ChannelID: r.ch.ID}); err == nil {
+			read = info.LastRead // 실패면 맨 아래 — 미리보기는 그대로 보인다
 		}
 		var latest string
 		if len(res.Messages) > 0 {
 			latest = res.Messages[0].Timestamp
 		}
 		slices.Reverse(res.Messages) // 최신순 → 아래가 최신
-		return previewMsg{seq, head, r.ch.ID, res.Messages, nil, latest}
+		return previewMsg{seq, head, r.ch.ID, res.Messages, nil, latest, read}
 	}
 }
 
@@ -553,9 +558,18 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var b bytes.Buffer
 		fmt.Fprintln(&b, msg.head)
-		m.s.printMessages(m.ctx, &b, out)
+		// 안 본 첫 메시지를 맨 위에(위로 스크롤하면 앞 맥락). 안 본 부분을 따로 찍어 날짜 줄이 경계 표시가 된다.
+		i := slices.IndexFunc(out, func(cm core.Message) bool { return msg.read != "" && cm.TS > msg.read })
+		if i < 0 {
+			i = len(out)
+		}
+		m.s.printMessages(m.ctx, &b, out[:i])
+		top := strings.Count(b.String(), "\n")
+		m.s.printMessages(m.ctx, &b, out[i:])
 		m.vp.SetContent(b.String())
-		m.vp.GotoBottom()
+		if m.vp.GotoBottom(); i < len(out) {
+			m.vp.SetYOffset(top) // 안 본 것이 화면보다 짧으면 viewport가 맨 아래로 맞춘다
+		}
 		if msg.latest != "" {
 			m.pv.ch, m.pv.ts = msg.ch, msg.latest
 		}

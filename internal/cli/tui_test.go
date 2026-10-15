@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -757,5 +758,32 @@ func TestTUIMergeDoneAcrossPhases(t *testing.T) {
 		latest: slack.Message{Msg: slack.Msg{Timestamp: c1.latest.TS, User: "U1AAAAAAAA"}}}}})
 	if r := at(m, "C1GENERAL0"); !r.done {
 		t.Errorf("치운 줄이 되살아남: %+v", r)
+	}
+}
+
+// TestTUIPreviewFirstUnread: 미리보기는 안 본 첫 메시지를 맨 위에, last_read를 모르면 맨 아래.
+func TestTUIPreviewFirstUnread(t *testing.T) {
+	f, m := filledTUI(t)
+	var msgs []slack.Message
+	for i := range 30 {
+		msgs = append(msgs, slack.Message{Msg: slack.Msg{Timestamp: fmt.Sprintf("17000000%02d.000000", i), User: "U1AAAAAAAA", Text: fmt.Sprint("m", i)}})
+	}
+	show := func(read string) string {
+		m.Update(previewMsg{seq: m.seq, head: "#general", ch: "C1GENERAL0", msgs: msgs, latest: "1700000029.000000", read: read})
+		return strings.Split(m.vp.View(), "\n")[0]
+	}
+	if top := show("1700000019.000000"); !strings.Contains(top, "──") { // 안 본 부분의 날짜 줄이 경계
+		t.Errorf("맨 위: %q", top)
+	}
+	if v := m.vp.View(); !strings.Contains(strings.Split(v, "\n")[1], "1700000020.000000") {
+		t.Errorf("안 본 첫 메시지가 맨 위가 아니다:\n%s", v)
+	}
+	if show(""); !m.vp.AtBottom() {
+		t.Error("last_read 모르면 맨 아래")
+	}
+	n := len(f.reqs["conversations.info"])
+	_, cmd := m.Update(press("enter"))
+	if msg := cmd().(previewMsg); msg.read != "1700000001.000000" || len(f.reqs["conversations.info"]) != n+1 {
+		t.Errorf("last_read: %q", msg.read)
 	}
 }
