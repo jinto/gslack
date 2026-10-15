@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jinto/gslack/internal/core"
 	"github.com/muesli/termenv"
 	"github.com/slack-go/slack"
 )
@@ -208,5 +209,14 @@ func TestTUILinesLayout(t *testing.T) {
 	}
 	if j := strings.Join(lines, ""); strings.Contains(j, "\x1b]52") {
 		t.Errorf("제어문자가 남음: %q", j)
+	}
+}
+
+// TestRichTextSkinTone: rich_text 이모지의 skin_tone은 Slack 원문 꼴로 — Emoji가 변형을 찾는다.
+func TestRichTextSkinTone(t *testing.T) {
+	got := richText([]slack.RichTextElement{&slack.RichTextSection{Elements: []slack.RichTextSectionElement{
+		&slack.RichTextSectionEmojiElement{Name: "+1", SkinTone: 3}, &slack.RichTextSectionEmojiElement{Name: "car"}}}})
+	if got != ":+1::skin-tone-3::car:\n" || core.Emoji(got) != "👍🏼🚗\n" { // 섹션마다 줄바꿈
+		t.Errorf("%q → %q", got, core.Emoji(got))
 	}
 }

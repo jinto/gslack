@@ -99,6 +99,7 @@ func TestEmoji(t *testing.T) {
 		":car::skin-tone-2:":          "🚗",     // 피부색 없는 이모지 — 견본을 따로 붙이지 않는다
 		":no_such_custom: 12:30:45":   ":no_such_custom: 12:30:45",
 		"a:bad:car:":                  "a:bad🚗", // 빗나간 이름이 콜론을 먹지 않는다
+		":custom::skin-tone-3:":       ":custom::skin-tone-3:",
 		":heavy_check_mark: done :x:": "✔️ done ❌",
 	} {
 		if got := Emoji(in); got != want {

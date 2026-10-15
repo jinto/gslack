@@ -12,6 +12,8 @@ data = json.load(urllib.request.urlopen(f"https://cdn.jsdelivr.net/npm/emoji-dat
 table = {}
 for e in data:
     for name in e["short_names"]:
+        if name.startswith("skin-tone-"):  # 견본 단독 — :custom::skin-tone-3:에서 따로 맞지 않게
+            continue
         table[name] = chars(e["unified"])
         for key, v in (e.get("skin_variations") or {}).items():
             if key in TONES:  # 한 가지 톤만(두 사람 이모지의 섞인 톤은 뺀다)
