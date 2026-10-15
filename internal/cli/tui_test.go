@@ -938,8 +938,10 @@ func TestTUIOpenThread(t *testing.T) {
 		return slack.Message{Msg: slack.Msg{Timestamp: "17000000" + ts + ".000000", ThreadTimestamp: th, ReplyCount: n, User: "U1AAAAAAAA", Text: "x" + ts}}
 	}
 	esc := tea.KeyMsg{Type: tea.KeyEsc}
-	m.Update(previewMsg{seq: m.seq, head: "#general", ch: "C1GENERAL0", latest: "1700000004.000000",
-		msgs: []slack.Message{msg("01", "1700000001.000000", 2), msg("03", "1700000001.000000", 0), msg("04", "", 0)}})
+	general := previewMsg{head: "#general", ch: "C1GENERAL0", latest: "1700000004.000000",
+		msgs: []slack.Message{msg("01", "1700000001.000000", 2), msg("03", "1700000001.000000", 0), msg("04", "", 0)}}
+	general.seq = m.seq
+	m.Update(general)
 	seq := m.seq
 	if _, cmd := m.Update(press("enter")); cmd != nil || m.seq != seq || strings.Contains(m.View(), "Enter 스레드") {
 		t.Fatal("답글 없는 메시지 Enter")
@@ -991,5 +993,19 @@ func TestTUIOpenThread(t *testing.T) {
 	m.Update(cmd())
 	if r := f.reqs["conversations.mark"]; len(r) != mk+1 || r[mk].Get("channel") != "C1GENERAL0" || r[mk].Get("ts") != "1700000004.000000" || m.focus || m.back != nil {
 		t.Errorf("스레드 안 m: %v focus %v", r, m.focus)
+	}
+
+	m.Update(press("enter")) // 스레드 받기 실패해도 Esc로 채널, 다시 Esc로 목록
+	general.seq = m.seq
+	m.Update(general)
+	m.Update(press("k"))
+	m.Update(press("enter"))
+	m.Update(previewMsg{seq: m.seq, head: "#general — 스레드", err: errors.New("boom")})
+	m.Update(esc)
+	if !m.focus || len(m.pvMsgs) != 3 {
+		t.Errorf("실패 뒤 Esc: focus %v %d", m.focus, len(m.pvMsgs))
+	}
+	if m.Update(esc); m.focus || m.back != nil {
+		t.Error("다시 Esc → 목록")
 	}
 }
