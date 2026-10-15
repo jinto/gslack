@@ -8,6 +8,7 @@ gslack read general -n 20           # 최근 20개
 gslack send @jaekwon "점심 가요?"
 gslack thread <permalink>
 gslack watch --notify               # DM·멘션이 오면 한 줄 + macOS 알림
+gslack tui                          # 받은편지함 화면(아래 TUI)
 ```
 
 ## 설치
@@ -50,6 +51,21 @@ gslack --profile work auth import acme # 여러 개면 [team]으로 고르고, �
 ```
 
 Slack 데스크톱 앱의 로컬 저장소에서 xoxc 토큰과 `d` 쿠키를 읽어 session 프로필을 만든다(DevTools 손 작업 불필요). 처음 실행 때 Keychain "Slack Safe Storage" 접근 **승인 프롬프트**가 한 번 뜬다. 읽기만 하며 Slack 앱은 건드리지 않는다. **비공식** — Slack 내부 형식에 의존하므로 앱 업데이트로 깨질 수 있다. macOS 전용.
+
+## TUI — `gslack tui`
+
+위는 목록(나에게 온 것 / 안 읽은 채널), 아래는 미리보기. 실시간은 프로필 따라 자동(session은 RTM, user는 앱 토큰이 있으면 Socket Mode).
+
+| 키 | 목록 | 미리보기(Enter로 들어감) |
+|---|---|---|
+| `j`/`k` | 줄 이동 | 메시지 고르기 |
+| `Enter` | 미리보기 열기 | 고른 메시지의 스레드 열기 |
+| `Esc` | — | 목록으로(j/k로 지나간 데까지 읽음), 연 스레드면 채널로 |
+| `r` | 답장 | 고른 메시지에 답장(채널은 스레드로) |
+| `m` | 대화 치우기(전부 읽음) | 같음 |
+| `l` | Slack "나중에"에 넣기(session 프로필) | 고른 메시지를 |
+| `o` | 브라우저로 | 고른 메시지를 |
+| `R` / `q` | 새로고침 / 끝 | |
 
 ## 명령
 
