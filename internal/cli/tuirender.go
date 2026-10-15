@@ -106,24 +106,24 @@ func emph(s string, c byte, on, off rune) string {
 // mrkdwnSpans는 mrkdwn 원문을 span으로 바꾼다. base는 바탕 스타일(context는 흐리게 등).
 func (s *session) mrkdwnSpans(ctx context.Context, text string, base lipgloss.Style) []span {
 	text = clean(text)
-	var slots [][]span
-	protect := func(re *regexp.Regexp, text string, f func(m []string) []span) string {
+	var slots []span
+	protect := func(re *regexp.Regexp, text string, f func(m []string) span) string {
 		return re.ReplaceAllStringFunc(text, func(x string) string {
 			slots = append(slots, f(re.FindStringSubmatch(x)))
 			return string(rune(slotBase + len(slots) - 1))
 		})
 	}
-	text = protect(codeBlockRe, text, func(m []string) []span {
-		return []span{{text: "\n" + htmlEntities.Replace(strings.Trim(m[1], "\n")) + "\n", style: codeStyle}}
+	text = protect(codeBlockRe, text, func(m []string) span {
+		return span{text: "\n" + htmlEntities.Replace(strings.Trim(m[1], "\n")) + "\n", style: codeStyle}
 	})
-	text = protect(inlineCodeRe, text, func(m []string) []span { return []span{{text: htmlEntities.Replace(m[1]), style: codeStyle}} })
-	text = protect(mrkTagRe, text, func(m []string) []span {
+	text = protect(inlineCodeRe, text, func(m []string) span { return span{text: htmlEntities.Replace(m[1]), style: codeStyle} })
+	text = protect(mrkTagRe, text, func(m []string) span {
 		target, label, _ := strings.Cut(m[1], "|")
 		if strings.IndexAny(target, "@#!") == 0 || strings.HasPrefix(target, "mailto:") && label == "" {
-			return []span{{text: s.render(ctx, m[0]), style: base}} // 이름·채널·그룹·특수 명령
+			return span{text: s.render(ctx, m[0]), style: base} // 이름·채널·그룹·특수 명령
 		}
 		target, label = htmlEntities.Replace(target), htmlEntities.Replace(label)
-		return []span{{text: cmp.Or(label, target), style: linkStyle, link: target}}
+		return span{text: cmp.Or(label, target), style: linkStyle, link: target}
 	})
 	text = quoteRe.ReplaceAllString(text, string(quoteMark))
 	text = emph(text, '*', boldOn, boldOff)
@@ -132,17 +132,8 @@ func (s *session) mrkdwnSpans(ctx context.Context, text string, base lipgloss.St
 
 	var out []span
 	var bold, ital, strike bool
-	style := func(st lipgloss.Style) lipgloss.Style {
-		if bold {
-			st = st.Bold(true)
-		}
-		if ital {
-			st = st.Italic(true)
-		}
-		if strike {
-			st = st.Strikethrough(true)
-		}
-		return st
+	style := func(st lipgloss.Style) lipgloss.Style { // 바탕이 굵으면(header) 그대로
+		return st.Bold(bold || st.GetBold()).Italic(ital || st.GetItalic()).Strikethrough(strike || st.GetStrikethrough())
 	}
 	var buf strings.Builder
 	flush := func() {
@@ -155,9 +146,8 @@ func (s *session) mrkdwnSpans(ctx context.Context, text string, base lipgloss.St
 		switch {
 		case r >= slotBase && int(r-slotBase) < len(slots):
 			flush()
-			for _, sp := range slots[r-slotBase] {
-				out = append(out, span{text: sp.text, style: style(sp.style), link: sp.link})
-			}
+			sp := slots[r-slotBase]
+			out = append(out, span{text: sp.text, style: style(sp.style), link: sp.link})
 		case r == quoteMark:
 			flush()
 			out = append(out, span{quote: true})
