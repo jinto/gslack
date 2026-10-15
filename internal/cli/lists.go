@@ -139,7 +139,7 @@ func (a *app) whoisCmd() *cobra.Command {
 			}
 			fmt.Fprintf(a.out, "%s @%s — %s\n", out.ID, out.Name, out.RealName)
 			for _, kv := range [][2]string{{"표시명", out.DisplayName}, {"직함", out.Title},
-				{"상태", strings.TrimSpace(out.StatusEmoji + " " + out.StatusText)}, {"시간대", out.TZ}, {"프레즌스", out.Presence}} {
+				{"상태", strings.TrimSpace(core.Emoji(out.StatusEmoji) + " " + out.StatusText)}, {"시간대", out.TZ}, {"프레즌스", out.Presence}} {
 				if kv[1] != "" {
 					fmt.Fprintf(a.out, "  %-6s %s\n", kv[0], kv[1])
 				}

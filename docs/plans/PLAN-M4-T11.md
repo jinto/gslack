@@ -1,6 +1,6 @@
 # M4 T11 구현 계획 — 이모지 단축코드 → 글자
 
-> 2026-10-15 · 대상: TASKS M4 T11(새 항목) · 상태: 초안(리뷰 전)
+> 2026-10-15 · 대상: TASKS M4 T11(새 항목) · 상태: Codex·Opus 리뷰 반영(Fable은 한도로 Opus가 대신)
 > 목표(사용자 요청 "이모지들이 안보여요"): `:car: 9`, `… 진행할게요. :bow:`가 🚗 9, 🙇로. 사용자 결정: T7보다 먼저. 커스텀(워크스페이스) 이모지는 그림이라 `:이름:` 그대로 — T7에서 그림으로.
 
 ## 1. 이름표
@@ -20,6 +20,16 @@
 ## 3. 폭
 
 - 이모지는 2칸. `ansi.StringWidth`·`cellbuf.Wrap`이 2칸으로 센다. `2714-FE0F`(✔️)처럼 VS16이 붙은 것은 터미널마다 1칸·2칸이 갈려 줄 끝이 한 칸 밀릴 수 있다 — 표의 글자를 그대로 쓰고, 라이브에서 보고 정한다.
+
+## 4. 리뷰 반영(Codex·Opus) — 위보다 이것이 우선
+
+- **피부색은 표에서 찾는다**(Opus 1): 수식자를 뒤에 붙이면 ZWJ·VS16 이모지(`:man-bowing::skin-tone-3:` = 1F647-1F3FC-200D-2642-FE0F)가 깨진다. 생성기가 `skin_variations`도 `이름::skin-tone-N` 키로 내보내고, `Emoji`는 `이름::skin-tone-N`을 먼저, 없으면 이름만(수식자는 버림 — 피부색 없는 이모지에 색 견본이 따로 붙지 않게). 리액션 이름(`+1::skin-tone-2`)도 같은 표.
+- **표는 생성한 Go 파일**(Opus 7): `internal/core/emoji_table.go`(map 리터럴) — embed·파싱·OnceValue 없음. 생성기는 `scripts/emoji.py`(uv, 고정 버전 15.1.2), core에 `//go:generate` 한 줄. 생성 파일은 커밋한다.
+- **빗나간 이름이 콜론을 먹지 않게**(Opus 2, Codex 1): 정규식 치환 대신 콜론마다 `^:이름:(:skin-tone-N:)?`를 맞춰 보고, 표에 없으면 콜론 하나만 넘기는 루프(`a:bad:car:` → `a:bad🚗`). 숫자 이름(`:100:`)은 진짜 이모지라 `10:100:20`은 바뀐다 — 그대로.
+- **JSON은 원문**(Codex 6·7, Opus 3): `Emoji`는 `Render`·TUI·리액션·상태 이모지 표시에서만. `core.Message.Text`(`--json`)는 그대로. 단 rich_text 이모지의 skin_tone을 `:x::skin-tone-N:`로 적으면 `fallbackText`가 채우는 JSON text도 그 꼴이 된다(Slack 원문 꼴이라 더 충실).
+- **상태 이모지**(Opus 8): `me`·`users` 평문 출력의 `:palm_tree:`도 `Emoji`로(JSON은 그대로).
+- **폭**(Opus 5, Codex 9): 실측 `ansi.StringWidth` — 🚗·✔️·👍🏼·ZWJ·국기 2, keycap(1️⃣) 1(터미널은 대개 2). 라이브에서 보고 정한다. `preview()`의 rune 자르기가 👍🏼를 반쪽 낼 수 있다 — 이번엔 안 고침.
+- Render의 코드 블록·rich_text preformatted 안 `:x:`도 바뀐다(Codex 3·4) — ponytail로 두고 테스트로 고정.
 
 ## 테스트
 

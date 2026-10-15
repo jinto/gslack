@@ -125,6 +125,7 @@ func (s *session) mrkdwnSpans(ctx context.Context, text string, base lipgloss.St
 		target, label = htmlEntities.Replace(target), htmlEntities.Replace(label)
 		return span{text: cmp.Or(label, target), style: linkStyle, link: target}
 	})
+	text = core.Emoji(text) // 코드·태그를 뗀 뒤, 강조 전에(heavy_check_mark의 _)
 	text = quoteRe.ReplaceAllString(text, string(quoteMark))
 	text = emph(text, '*', boldOn, boldOff)
 	text = emph(text, '_', italOn, italOff)
@@ -403,7 +404,7 @@ func (s *session) tuiLines(ctx context.Context, raw slack.Message, cm core.Messa
 		tags = append(tags, "(edited)")
 	}
 	for _, r := range cm.Reactions {
-		tags = append(tags, fmt.Sprintf(":%s: %d", r.Name, r.Count))
+		tags = append(tags, fmt.Sprintf("%s %d", core.Emoji(":"+r.Name+":"), r.Count)) // 이름에 ::skin-tone-N이 붙어 온다
 	}
 	if len(tags) > 0 {
 		lines = append(lines, prefixed(bodyIndent, []span{{text: strings.Join(tags, "  "), style: dimStyle}}, width)...)

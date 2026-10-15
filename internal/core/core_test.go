@@ -89,3 +89,24 @@ func TestPermalinkAndTime(t *testing.T) {
 		t.Error(got)
 	}
 }
+
+func TestEmoji(t *testing.T) {
+	for in, want := range map[string]string{
+		":car: 9":                     "🚗 9",
+		"진행할게요. :bow: :bow:":          "진행할게요. 🙇 🙇",
+		":+1::skin-tone-3:":           "👍🏼",
+		":man-bowing::skin-tone-3:":   "🙇🏼‍♂️", // ZWJ — 수식자를 뒤에 붙이지 않는다
+		":car::skin-tone-2:":          "🚗",     // 피부색 없는 이모지 — 견본을 따로 붙이지 않는다
+		":no_such_custom: 12:30:45":   ":no_such_custom: 12:30:45",
+		"a:bad:car:":                  "a:bad🚗", // 빗나간 이름이 콜론을 먹지 않는다
+		":heavy_check_mark: done :x:": "✔️ done ❌",
+	} {
+		if got := Emoji(in); got != want {
+			t.Errorf("%q → %q, want %q", in, got, want)
+		}
+	}
+	none := func(string) string { return "" }
+	if got := Render("<https://x.com/:car:|:car: 링크> :car: ```:x:```", none, none, none); got != ":car: 링크 (https://x.com/:car:) 🚗 ```❌```" {
+		t.Errorf("Render: %q", got) // 태그 안은 그대로, 코드 블록 안은 바뀐다(ponytail)
+	}
+}

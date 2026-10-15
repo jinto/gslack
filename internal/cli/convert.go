@@ -3,6 +3,7 @@ package cli
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/jinto/gslack/internal/core"
@@ -137,6 +138,9 @@ func richText(els []slack.RichTextElement) string {
 				b.WriteString("<!" + e.Range + ">")
 			case *slack.RichTextSectionEmojiElement:
 				b.WriteString(":" + e.Name + ":")
+				if e.SkinTone >= 2 { // Slack 원문 꼴 — core.Emoji가 표에서 변형을 찾는다
+					fmt.Fprintf(&b, ":skin-tone-%d:", e.SkinTone)
+				}
 			}
 		}
 		b.WriteString("\n")

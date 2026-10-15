@@ -831,7 +831,7 @@ func TestEditDelete(t *testing.T) {
 func TestStatus(t *testing.T) {
 	f := setup(t)
 	code, out, e := gslack("status", "set", "점심", "--emoji", "ramen", "--until", "2h")
-	if code != 0 || !strings.Contains(out, ":ramen: 점심") {
+	if code != 0 || !strings.Contains(out, "🍜 점심") {
 		t.Fatalf("%d %s %s", code, out, e)
 	}
 	var p struct {

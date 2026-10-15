@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jinto/gslack/internal/core"
 	"github.com/spf13/cobra"
 )
 
@@ -99,7 +100,7 @@ func (a *app) showStatus(ctx context.Context, s *session) error {
 		fmt.Fprintln(a.out, "상태 없음")
 		return nil
 	}
-	line := strings.TrimSpace(p.StatusEmoji + " " + p.StatusText)
+	line := strings.TrimSpace(core.Emoji(p.StatusEmoji) + " " + p.StatusText)
 	if p.StatusExpiration > 0 {
 		line += time.Unix(int64(p.StatusExpiration), 0).Local().Format(" (~01/02 15:04)")
 	}

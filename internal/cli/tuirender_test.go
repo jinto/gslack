@@ -76,6 +76,7 @@ func TestMrkdwnSpans(t *testing.T) {
 		{"a <|x> b", "a x b"},                              // 빈 대상 태그 — 패닉 없이
 		{"nerd \ue0a0 x", "nerd \ue0a0 x"},                 // BMP 사용자 영역(Nerd Font) 그대로
 		{"evil \U000F0000 x \x1b[2J", "evil \ufffd x [2J"}, // 마커 영역·제어문자는 지운다
+		{":bow: `:car:` :a_b: x :heavy_check_mark:", "🙇 [code]:car:[/code] :a_b: x ✔️"}, // 코드 안 그대로, 이름의 _는 기울임 아님
 	} {
 		if got := desc(s.mrkdwnSpans(ctx, c.in, lipgloss.NewStyle())); got != c.want {
 			t.Errorf("%q\n got %q\nwant %q", c.in, got, c.want)
@@ -201,7 +202,7 @@ func TestTUILinesLayout(t *testing.T) {
 		got = append(got, strings.TrimSpace(ansi.Strip(l)))
 	}
 	want := []string{"│ one two three four", "│ five six seven eight", "│ nine ten", "code", "after",
-		"▌ GitHub", "▌ PR ]52;c;x", "▌ [image]", "[file: a.png]", ":eyes: 2"}
+		"▌ GitHub", "▌ PR ]52;c;x", "▌ [image]", "[file: a.png]", "👀 2"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("줄:\n got %q\nwant %q", got, want)
 	}
