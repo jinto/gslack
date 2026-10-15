@@ -33,7 +33,7 @@
 
 ## 테스트
 
-- `TestTUISeenMark`(previewMsg 직접): read …01, 메시지 …01 …02 …03(…01은 읽음). Enter → Esc → mark 없음. Enter → j(…03) → k(…02) → Esc → mark …03? 아니 max라 …03, 줄 done(= 최신). 중간: j 한 번만이면 …03이 아니라 처음 …02에서 j → …03… — 테스트는 메시지 넷으로 중간·끝을 따로.
+- `TestTUISeenMark`(previewMsg 직접): read …01, 메시지 …01 …02 …03 …04(처음 고른 것 …02). Enter → Esc → mark 없음. Enter → j(…03) → Esc → mark …03, 줄 남음. Enter → j → j(…04) → k → Esc → mark …04(max), 줄 done.
 - read "" → j → Esc → 없음. 첫 메시지가 read 뒤(20개 넘음) → 없음 + 상태줄. 스레드 줄 미리보기 → j → Esc → 앞 채널 mark 없음. T8: 채널 j → 스레드 열기 → 스레드 안 j → Esc → Esc → 채널에서 간 데까지. forMe 채널 줄(latest = 멘션)에서 멘션까지만 → 줄 남음.
 
 ## 안 하는 것
