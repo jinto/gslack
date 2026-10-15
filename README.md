@@ -11,6 +11,16 @@ gslack watch --notify               # DM·멘션이 오면 한 줄 + macOS 알�
 gslack tui                          # 받은편지함 화면(아래 TUI)
 ```
 
+## 빠른 시작(macOS)
+
+```sh
+brew install jinto/tap/gslack
+gslack auth import     # Slack 데스크톱 앱에 로그인된 계정으로(처음 한 번 Keychain 허락 창)
+gslack tui
+```
+
+업데이트는 `brew upgrade gslack`. `auth import`는 비공식 방식이다 — 회사라면 보안 정책을 먼저 확인하고, 공식 방식은 아래 [Slack 앱 만들기](#slack-앱-만들기한-번)·[로그인](#로그인).
+
 ## 설치
 
 ```sh
