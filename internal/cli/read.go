@@ -259,14 +259,17 @@ func trimBlankLines(s string) string {
 }
 
 // printMessages: 날짜가 바뀌면 머리줄, 메시지마다 ts를 항상 앞에 둔다(다음 명령의 입력).
-func (s *session) printMessages(ctx context.Context, w io.Writer, msgs []core.Message) {
+// 메시지마다 첫 줄 번호(쓴 줄 기준 0부터)를 돌려준다 — tui 미리보기가 고른 메시지를 찾는다.
+func (s *session) printMessages(ctx context.Context, w io.Writer, msgs []core.Message) []int {
 	const indent = "                          " // ts(17) + 2 + HH:MM(5) + 2
-	lastDay := ""
-	for _, m := range msgs {
+	lastDay, n := "", 0
+	starts := make([]int, len(msgs))
+	for i, m := range msgs {
 		t := core.Time(m.TS).Local()
 		if day := t.Format("2006-01-02 Mon"); day != lastDay {
 			fmt.Fprintf(w, "── %s ──\n", day)
 			lastDay = day
+			n++
 		}
 		text := withTags(trimBlankLines(s.render(ctx, m.Text)), m)
 		name := m.UserName
@@ -278,5 +281,7 @@ func (s *session) printMessages(ctx context.Context, w io.Writer, msgs []core.Me
 		for _, l := range lines[1:] {
 			fmt.Fprintf(w, "%s%s\n", indent, l)
 		}
+		starts[i], n = n, n+len(lines)
 	}
+	return starts
 }

@@ -772,18 +772,139 @@ func TestTUIPreviewFirstUnread(t *testing.T) {
 		m.Update(previewMsg{seq: m.seq, head: "#general", ch: "C1GENERAL0", msgs: msgs, latest: "1700000029.000000", read: read})
 		return strings.Split(m.vp.View(), "\n")[0]
 	}
-	if top := show("1700000019.000000"); !strings.Contains(top, "──") { // 안 본 부분의 날짜 줄이 경계
-		t.Errorf("맨 위: %q", top)
+	if top := show("1700000005.000000"); !strings.Contains(top, "1700000006.000000") || m.sel != 6 { // 안 본 게 화면보다 길다
+		t.Errorf("안 본 첫 메시지가 맨 위가 아니다: %q sel %d", top, m.sel)
 	}
-	if v := m.vp.View(); !strings.Contains(strings.Split(v, "\n")[1], "1700000020.000000") {
-		t.Errorf("안 본 첫 메시지가 맨 위가 아니다:\n%s", v)
+	if show("1700000025.000000"); !m.vp.AtBottom() || m.sel != 26 { // 짧으면 맨 아래, 고른 것은 그대로
+		t.Errorf("짧은 안 봄: sel %d", m.sel)
 	}
-	if show(""); !m.vp.AtBottom() {
-		t.Error("last_read 모르면 맨 아래")
+	if show(""); !m.vp.AtBottom() || m.sel != 29 {
+		t.Error("last_read 모르면 마지막을 골라 맨 아래")
 	}
 	n := len(f.reqs["conversations.info"])
 	_, cmd := m.Update(press("enter"))
 	if msg := cmd().(previewMsg); msg.read != "1700000001.000000" || len(f.reqs["conversations.info"]) != n+1 {
 		t.Errorf("last_read: %q", msg.read)
+	}
+}
+
+// TestTUIFocus: Enter → 미리보기 포커스(구분선에 이름, 힌트, 목록은 작게), j/k는 메시지, 다시 Enter는 무시, Esc로 목록.
+func TestTUIFocus(t *testing.T) {
+	_, m := filledTUI(t)
+	m.liveErr, m.status = nil, "" // 힌트가 80칸에 다 보이게
+	if m.listH != 5 {             // 머리줄 둘 + 줄 셋 — 40%(9)보다 작으면 줄 수만큼
+		t.Errorf("목록 높이 %d", m.listH)
+	}
+	_, cmd := m.Update(press("enter"))
+	if v := m.View(); !m.focus || !strings.Contains(v, "━━ @지수") || !strings.Contains(v, "Esc 목록") || m.listH > 3 || strings.Count(v, "\n") != 23 {
+		t.Fatalf("포커스 %v listH %d:\n%s", m.focus, m.listH, v)
+	}
+	m.Update(cmd())
+	seq := m.seq
+	m.Update(press("enter"))
+	m.Update(press("j"))
+	if m.seq != seq || m.cur != 0 || m.sel != 1 {
+		t.Errorf("미리보기 키: seq %d→%d cur %d sel %d", seq, m.seq, m.cur, m.sel)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if v := m.View(); m.focus || m.listH != 5 || strings.Contains(v, "━━") || strings.Count(v, "\n") != 23 {
+		t.Errorf("Esc: 포커스 %v listH %d", m.focus, m.listH)
+	}
+}
+
+// TestTUIPreviewReply: 포커스 중 r·o는 고른 메시지로, 대상은 미리보기한 줄(목록 커서와 무관).
+func TestTUIPreviewReply(t *testing.T) {
+	f, m := filledTUI(t)
+	m.Update(press("j")) // #general(last_read …02, 미리보기 …03 …04)
+	_, cmd := m.Update(press("enter"))
+	if _, c := m.Update(press("r")); c == nil || m.reply.latest.TS != at(m, "C1GENERAL0").latest.TS { // 응답 전엔 줄 기준
+		t.Errorf("응답 전 r: %+v", m.reply)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m.Update(cmd())
+	if m.sel != 0 || m.pvMsgs[0].TS != "1700000003.000000" {
+		t.Fatalf("처음 고른 것: %d %+v", m.sel, m.pvMsgs)
+	}
+	m.Update(press("j"))
+	m.Update(press("k"))
+	m.cur = 0 // 실시간 등으로 목록 커서가 다른 줄로 가도
+	m.Update(press("r"))
+	if !strings.Contains(m.ti.Prompt, "#general ↳ @Deploy Bot: deployed") {
+		t.Errorf("입력줄: %q", m.ti.Prompt)
+	}
+	typeText(m, "ok")
+	_, cmd = m.Update(press("enter"))
+	_, cmd = m.Update(cmd())
+	p, mk := f.reqs["chat.postMessage"], f.reqs["conversations.mark"]
+	if len(p) != 1 || p[0].Get("channel") != "C1GENERAL0" || p[0].Get("thread_ts") != "1700000003.000000" ||
+		len(mk) != 1 || mk[0].Get("ts") != "1700000003.000000" {
+		t.Errorf("보낸 것: %v 읽음 %v", p, mk)
+	}
+	if msg := cmd().(previewMsg); msg.head != "#general" || !m.focus {
+		t.Errorf("답장 뒤 미리보기: %q 포커스 %v", msg.head, m.focus)
+	}
+
+	var got string
+	orig := openURL
+	t.Cleanup(func() { openURL = orig })
+	openURL = func(u string) error { got = u; return nil }
+	m.Update(press("j"))
+	_, cmd = m.Update(press("o"))
+	if cmd(); got != m.pvMsgs[1].Permalink || got == "" {
+		t.Errorf("o: %q", got)
+	}
+
+	_, cmd = m.Update(press("m"))
+	m.Update(cmd())
+	if m.focus {
+		t.Error("치우면 목록으로")
+	}
+}
+
+// TestTUIPreviewReplyThread: 스레드 미리보기에서 부모를 골라도 r은 그 스레드로. DM 본문은 대화에 바로.
+func TestTUIPreviewReplyThread(t *testing.T) {
+	f, m := filledTUI(t)
+	_, cmd := m.Update(press("enter")) // DM history
+	m.Update(cmd())
+	m.Update(press("r"))
+	typeText(m, "a")
+	_, cmd = m.Update(press("enter"))
+	m.Update(cmd())
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	m.rows[0].latest.TS, m.rows[0].latest.ThreadTS = "1700000002.500000", "1700000002.000000"
+	_, cmd = m.Update(press("enter"))
+	m.Update(cmd())
+	m.Update(press("k")) // 부모
+	m.Update(press("r"))
+	typeText(m, "b")
+	_, cmd = m.Update(press("enter"))
+	m.Update(cmd())
+	if p := f.reqs["chat.postMessage"]; len(p) != 2 || p[0].Get("thread_ts") != "" || p[1].Get("thread_ts") != "1700000002.000000" {
+		t.Errorf("보낸 것: %v", p)
+	}
+}
+
+// TestTUILayoutResize: 화면 높이가 바뀌어도 고른 메시지가 보인다.
+func TestTUILayoutResize(t *testing.T) {
+	_, m := filledTUI(t)
+	var msgs []slack.Message
+	for i := range 30 {
+		msgs = append(msgs, slack.Message{Msg: slack.Msg{Timestamp: fmt.Sprintf("17000000%02d.000000", i), User: "U1AAAAAAAA", Text: "x"}})
+	}
+	m.Update(press("enter"))
+	m.Update(previewMsg{seq: m.seq, head: "@지수", ch: "D3UNREADDM", msgs: msgs})
+	for range 3 {
+		m.Update(press("k"))
+	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+	if from, to := m.pvSpan(); from < m.vp.YOffset || to > m.vp.YOffset+m.vp.Height {
+		t.Errorf("고른 줄 %d-%d, 화면 %d+%d", from, to, m.vp.YOffset, m.vp.Height)
+	}
+	for range 30 {
+		m.Update(press("k"))
+	}
+	if from, _ := m.pvSpan(); m.sel != 0 || from < m.vp.YOffset {
+		t.Errorf("맨 위로: sel %d 줄 %d 화면 %d", m.sel, from, m.vp.YOffset)
 	}
 }

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -96,7 +95,7 @@ type (
 		seq    int
 		head   string
 		ch     string
-		msgs   []slack.Message
+		msgs   []slack.Message // 오래된 것부터
 		err    error
 		latest string // history 미리보기의 최신 ts — 스레드 미리보기는 ""(답글 ts로 대화를 mark하면 사이의 안 본 메시지까지 읽음이 된다)
 		read   string // history 미리보기의 last_read — 안 본 첫 메시지를 맨 위에. 모르면 ""(맨 아래)
@@ -154,6 +153,13 @@ type tuiModel struct {
 	filling  bool
 	seq      int                     // Enter마다 늘린다 — 늦게 온 미리보기를 버린다
 	pv       struct{ ch, ts string } // 마지막 history 미리보기의 최신 ts — m이 본 데까지 치운다
+	focus    bool                    // 미리보기에 포커스(Enter) — j/k는 메시지, r·o·m은 pvRow, Esc로 목록
+	pvRow    tuiRow                  // 미리보기한 줄 — 포커스 중 목록이 바뀌어도(실시간·채우기) 대상은 그대로
+	pvMsgs   []core.Message          // 미리보기 메시지. 받기 전·실패면 nil
+	pvStarts []int                   // 메시지마다 첫 줄(pvLines 기준)
+	pvLines  []string                // 강조 전 미리보기 줄
+	sel      int                     // 고른 메시지
+	height   int
 	listH    int
 	vp       viewport.Model
 	ti       textinput.Model
@@ -257,6 +263,7 @@ func scan(ctx context.Context, a *app, s *session, w *watcher, muted map[string]
 
 func (m *tuiModel) preview(r tuiRow) tea.Cmd {
 	m.seq++
+	m.pvRow = r
 	seq, ctx, s := m.seq, m.ctx, m.s
 	head := r.name
 	if r.thread() {
@@ -497,12 +504,133 @@ func (m *tuiModel) replyKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// Update는 무엇이 오든 끝에 높이를 다시 나눈다 — 목록 줄 수·포커스·화면 크기가 바뀌는 곳이 많다.
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	mm, cmd := m.update(msg)
+	m.layout()
+	return mm, cmd
+}
+
+// layout: 목록은 줄 수만큼, 목록 포커스면 화면의 40%까지, 미리보기 포커스면 3줄까지. 나머지는 미리보기.
+func (m *tuiModel) layout() {
+	lines, _ := m.listLines()
+	limit := m.height * 2 / 5
+	if m.focus {
+		limit = 3
+	}
+	m.listH = max(min(len(lines), limit), 1)
+	if h := max(m.height-m.listH-3, 1); h != m.vp.Height { // 구분선 둘 + 상태줄
+		m.vp.Height = h
+		m.vp.SetYOffset(m.vp.YOffset) // 높이를 직접 바꾸면 viewport가 offset을 맞추지 않는다
+		m.showSel()
+	}
+}
+
+// showPreview는 받은 미리보기를 둔다. 처음 고른 메시지는 안 본 첫 메시지(맨 위, 바로 앞 날짜 줄까지), 모르면 마지막(맨 아래).
+func (m *tuiModel) showPreview(msg previewMsg) {
+	out := make([]core.Message, len(msg.msgs))
+	for i, sm := range msg.msgs {
+		out[i] = m.s.message(m.ctx, sm, msg.ch)
+	}
+	var b strings.Builder
+	starts := m.s.printMessages(m.ctx, &b, out)
+	m.pvLines = append([]string{msg.head}, strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")...)
+	m.pvMsgs, m.pvStarts = out, make([]int, len(starts))
+	for i, n := range starts {
+		m.pvStarts[i] = n + 1 // head 한 줄
+	}
+	i := slices.IndexFunc(out, func(cm core.Message) bool { return msg.read != "" && cm.TS > msg.read })
+	if i < 0 {
+		m.sel = max(len(out)-1, 0)
+		m.highlight()
+		m.vp.GotoBottom()
+		return
+	}
+	m.sel = i
+	m.highlight()
+	top := m.pvStarts[i]
+	if strings.HasPrefix(m.pvLines[top-1], "── ") {
+		top--
+	}
+	m.vp.SetYOffset(top) // 안 본 것이 화면보다 짧으면 viewport가 맨 아래로 맞춘다
+}
+
+// pvSpan은 고른 메시지의 줄 범위다(다음 날짜 머리줄 제외).
+func (m *tuiModel) pvSpan() (from, to int) {
+	from, to = m.pvStarts[m.sel], len(m.pvLines)
+	if m.sel+1 < len(m.pvStarts) {
+		to = m.pvStarts[m.sel+1]
+		if strings.HasPrefix(m.pvLines[to-1], "── ") {
+			to--
+		}
+	}
+	return from, to
+}
+
+// highlight는 고른 메시지 줄을 뒤집어 내용을 바꾼다. 줄은 평문이라(render는 ANSI를 넣지 않는다) 덧입혀도 깨지지 않는다.
+func (m *tuiModel) highlight() {
+	lines := slices.Clone(m.pvLines)
+	if len(m.pvMsgs) > 0 {
+		from, to := m.pvSpan()
+		for k := from; k < to; k++ {
+			lines[k] = curStyle.Render(lines[k])
+		}
+	}
+	m.vp.SetContent(strings.Join(lines, "\n"))
+}
+
+// showSel은 고른 메시지가 화면에 들게 스크롤한다. 화면보다 길면 시작을 맨 위로.
+func (m *tuiModel) showSel() {
+	if len(m.pvMsgs) == 0 {
+		return
+	}
+	from, to := m.pvSpan()
+	switch {
+	case from < m.vp.YOffset || to-from > m.vp.Height:
+		m.vp.SetYOffset(from)
+	case to > m.vp.YOffset+m.vp.Height:
+		m.vp.SetYOffset(to - m.vp.Height)
+	}
+}
+
+// target은 r·m·o의 대상 줄이다. 미리보기 포커스면 미리보기한 줄 — r(history)·o는 고른 메시지로.
+// 스레드 미리보기의 r은 고른 것과 상관없이 그 스레드(부모를 골라도 DM 본문으로 새지 않게).
+func (m *tuiModel) target(k string) (tuiRow, bool) {
+	if !m.focus {
+		if len(m.rows) == 0 {
+			return tuiRow{}, false
+		}
+		return m.rows[m.cur], true
+	}
+	r := m.pvRow
+	if len(m.pvMsgs) > 0 && (k == "o" || k == "r" && !r.thread()) {
+		r.latest = m.pvMsgs[m.sel]
+	}
+	return r, true
+}
+
+// again은 답장 뒤 다시 미리보기할 줄이다 — 포커스 중이면 원래 미리보기한 줄(고른 메시지를 넣은 복사본이 broadcast면 스레드로 바뀐다).
+func (m *tuiModel) again(r tuiRow) tuiRow {
+	if m.focus {
+		return m.pvRow
+	}
+	return r
+}
+
+func (m *tuiModel) selectMsg(d int) {
+	if len(m.pvMsgs) == 0 {
+		return
+	}
+	m.sel = min(max(m.sel+d, 0), len(m.pvMsgs)-1)
+	m.highlight()
+	m.showSel()
+}
+
+func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.listH = msg.Height * 2 / 5
-		m.vp.Width, m.vp.Height = msg.Width, max(msg.Height-m.listH-3, 1) // 구분선 둘 + 상태줄
-		m.ti.Width = max(msg.Width-lipgloss.Width(m.ti.Prompt)-1, 1)      // 0이면 긴 본문이 두 줄이 된다
+		m.height, m.vp.Width = msg.Height, msg.Width
+		m.ti.Width = max(msg.Width-lipgloss.Width(m.ti.Prompt)-1, 1) // 0이면 긴 본문이 두 줄이 된다
 	case statusMsg:
 		if strings.HasPrefix(string(msg), "\r") { // scanUnread 진행
 			m.progress = strings.TrimSpace(string(msg))
@@ -549,27 +677,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil { // 이전 대화의 미리보기를 남기지 않는다
+			m.pvMsgs = nil
 			m.vp.SetContent(msg.head + "\n미리보기 실패: " + msg.err.Error())
 			return m, nil
 		}
-		out := make([]core.Message, len(msg.msgs))
-		for i, sm := range msg.msgs {
-			out[i] = m.s.message(m.ctx, sm, msg.ch)
-		}
-		var b bytes.Buffer
-		fmt.Fprintln(&b, msg.head)
-		// 안 본 첫 메시지를 맨 위에(위로 스크롤하면 앞 맥락). 안 본 부분을 따로 찍어 날짜 줄이 경계 표시가 된다.
-		i := slices.IndexFunc(out, func(cm core.Message) bool { return msg.read != "" && cm.TS > msg.read })
-		if i < 0 {
-			i = len(out)
-		}
-		m.s.printMessages(m.ctx, &b, out[:i])
-		top := strings.Count(b.String(), "\n")
-		m.s.printMessages(m.ctx, &b, out[i:])
-		m.vp.SetContent(b.String())
-		if m.vp.GotoBottom(); i < len(out) {
-			m.vp.SetYOffset(top) // 안 본 것이 화면보다 짧으면 viewport가 맨 아래로 맞춘다
-		}
+		m.showPreview(msg)
 		if msg.latest != "" {
 			m.pv.ch, m.pv.ts = msg.ch, msg.latest
 		}
@@ -582,7 +694,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case msg.err != nil:
 			m.status = "전송 여부 불확실 — 미리보기 확인(그대로 Enter면 두 번 갈 수 있다): " + msg.err.Error()
-			return m, m.preview(r)
+			return m, m.preview(m.again(r))
 		case msg.markErr != nil:
 			m.status = "보냈다 — 읽음 처리 실패(m으로 다시): " + msg.markErr.Error()
 		default:
@@ -590,16 +702,32 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setDone(r.ch.ID, msg.ts)
 		}
 		m.closeReply()
-		return m, m.preview(r)
+		return m, m.preview(m.again(r))
 	case markedMsg:
 		if msg.err != nil {
 			m.status = "치우기 실패: " + msg.err.Error()
 			return m, nil
 		}
 		m.setDone(msg.ch, msg.ts)
+		m.focus = false // 치웠으면 다음 줄로 가기 쉽게
 	case tea.KeyMsg:
 		if m.reply != nil {
 			return m.replyKey(msg)
+		}
+		if m.focus {
+			switch msg.String() {
+			case "esc":
+				m.focus = false
+				return m, nil
+			case "j", "down":
+				m.selectMsg(+1)
+				return m, nil
+			case "k", "up":
+				m.selectMsg(-1)
+				return m, nil
+			case "enter":
+				return m, nil
+			}
 		}
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -615,18 +743,24 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.fill(true)
 		case "enter", "r", "m", "o":
-			if len(m.rows) == 0 {
+			r, ok := m.target(msg.String())
+			if !ok {
 				break
 			}
-			r := m.rows[m.cur]
 			switch msg.String() {
 			case "enter":
+				m.focus, m.pvMsgs, m.sel = true, nil, 0
+				m.vp.SetContent(r.name + "\n불러오는 중…")
 				return m, m.preview(r)
 			case "r":
 				m.reply, m.status = &r, ""
-				m.ti.Prompt = " 답장 " + r.name + " > "
+				arrow := ""
 				if replyThread(r) != "" {
-					m.ti.Prompt = " 답장 " + r.name + " ↳ > "
+					arrow = " ↳"
+				}
+				m.ti.Prompt = " 답장 " + r.name + arrow + " > "
+				if m.focus { // 고른 메시지를 보여 준다
+					m.ti.Prompt = fmt.Sprintf(" 답장 %s%s @%s: %s > ", r.name, arrow, r.latest.UserName, preview(m.s.render(m.ctx, r.latest.Text), 30))
 				}
 				m.ti.Width = max(m.vp.Width-lipgloss.Width(m.ti.Prompt)-1, 1)
 				return m, m.ti.Focus()
@@ -657,16 +791,17 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var (
-	nameStyle = lipgloss.NewStyle().Width(24).MaxWidth(24).Inline(true) // Inline 없으면 자르지 않고 줄바꿈한다
-	curStyle  = lipgloss.NewStyle().Reverse(true)
-	doneStyle = lipgloss.NewStyle().Faint(true)
+	nameStyle  = lipgloss.NewStyle().Width(24).MaxWidth(24).Inline(true) // Inline 없으면 자르지 않고 줄바꿈한다
+	curStyle   = lipgloss.NewStyle().Reverse(true)
+	idleStyle  = lipgloss.NewStyle().Underline(true)
+	focusStyle = lipgloss.NewStyle().Bold(true)
+	doneStyle  = lipgloss.NewStyle().Faint(true)
 )
 
-func (m *tuiModel) View() string {
-	var b strings.Builder
-	line := lipgloss.NewStyle().MaxWidth(m.vp.Width).Inline(true) // 여러 줄 오류가 와도 한 줄
-	var lines []string                                            // 머리줄 + 줄
-	cur, forMe, chans := 0, 0, 0
+// listLines는 목록 줄(머리줄 포함)과 커서 줄 번호다. layout과 View가 같이 쓴다.
+func (m *tuiModel) listLines() (lines []string, cur int) {
+	line := lipgloss.NewStyle().MaxWidth(m.vp.Width).Inline(true)
+	forMe, chans := 0, 0
 	for _, r := range m.rows {
 		if !r.done && r.forMe {
 			forMe++
@@ -702,13 +837,25 @@ func (m *tuiModel) View() string {
 			l = doneStyle.Render(l)
 		}
 		if i == m.cur {
-			l, cur = curStyle.Render(l), len(lines)
+			cur = len(lines)
+			if m.focus { // 포커스가 미리보기에 있으면 밑줄만
+				l = idleStyle.Render(l)
+			} else {
+				l = curStyle.Render(l)
+			}
 		}
 		lines = append(lines, l)
 	}
 	if len(lines) == 0 && !m.filling && m.w != nil {
 		lines = append(lines, " 나에게 온 것이 없다")
 	}
+	return lines, cur
+}
+
+func (m *tuiModel) View() string {
+	var b strings.Builder
+	line := lipgloss.NewStyle().MaxWidth(m.vp.Width).Inline(true) // 여러 줄 오류가 와도 한 줄
+	lines, cur := m.listLines()
 	top := max(cur-m.listH+1, 0) // 커서가 보이게
 	for i := top; i < top+m.listH; i++ {
 		if i < len(lines) {
@@ -717,8 +864,15 @@ func (m *tuiModel) View() string {
 		b.WriteString("\n")
 	}
 	sep := strings.Repeat("─", m.vp.Width)
-	b.WriteString(sep + "\n" + m.vp.View() + "\n")
 	keys := "j/k 이동  Enter 열기  r 답장  m 치우기  o 브라우저  R 새로고침  q 끝"
+	if m.focus { // 미리보기 위 구분선에 대화 이름 — 포커스가 여기 있다
+		title := "━━ " + m.pvRow.name + " "
+		b.WriteString(line.Render(focusStyle.Render(title+strings.Repeat("━", max(m.vp.Width-lipgloss.Width(title), 0)))) + "\n")
+		keys = "j/k 메시지  r 답장  o 브라우저  m 치우기  Esc 목록  q 끝"
+	} else {
+		b.WriteString(sep + "\n")
+	}
+	b.WriteString(m.vp.View() + "\n")
 	if m.reply != nil { // 아래 구분선 자리에 입력줄 — 높이는 그대로
 		sep, keys = m.ti.View(), "Enter 보내기  Esc 취소"
 	}
