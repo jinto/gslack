@@ -39,6 +39,8 @@ func desc(spans []span) string {
 	for _, sp := range spans {
 		t := sp.text
 		switch {
+		case sp.quote:
+			t = "│ "
 		case sp.link != "":
 			t = "[link " + sp.link + "]" + t + "[/link]"
 		case sp.style.GetForeground() == codeStyle.GetForeground():
@@ -71,6 +73,9 @@ func TestMrkdwnSpans(t *testing.T) {
 		{"&gt; quoted\nnext", "│ quoted\nnext"},
 		{"*see <https://x.com|this>*", "[b]see [/b][b][link https://x.com]this[/link][/b]"},
 		{"*unclosed and _also", "*unclosed and _also"},
+		{"a <|x> b", "a x b"},                              // 빈 대상 태그 — 패닉 없이
+		{"nerd \ue0a0 x", "nerd \ue0a0 x"},                 // BMP 사용자 영역(Nerd Font) 그대로
+		{"evil \U000F0000 x \x1b[2J", "evil \ufffd x [2J"}, // 마커 영역·제어문자는 지운다
 	} {
 		if got := desc(s.mrkdwnSpans(ctx, c.in, lipgloss.NewStyle())); got != c.want {
 			t.Errorf("%q\n got %q\nwant %q", c.in, got, c.want)
@@ -178,5 +183,29 @@ func TestTUIPreviewResize(t *testing.T) {
 	}
 	if from, to := m.pvSpan(); m.sel != 0 || from < m.vp.YOffset || from >= m.vp.YOffset+m.vp.Height || to <= from {
 		t.Errorf("고른 것 sel %d %d-%d 화면 %d", m.sel, from, to, m.vp.YOffset)
+	}
+}
+
+// TestTUILinesLayout: 인용은 감싼 줄마다 │, 코드 블록 앞뒤 빈 줄 없음, 파일은 제 줄, 제어문자 없음, unfurl 출처.
+func TestTUILinesLayout(t *testing.T) {
+	s := renderSession(t)
+	ctx := context.Background()
+	var raw slack.Message
+	json.Unmarshal([]byte(`{"ts":"1700000001.000000","user":"U1AAAAAAAA",
+		"text":"&gt; one two three four five six seven eight nine ten\n`+"```"+`code`+"```"+`\nafter",
+		"files":[{"id":"F1","name":"a.png"}],"reactions":[{"name":"eyes","count":2}],
+		"attachments":[{"service_name":"GitHub","title":"PR \u001b]52;c;x\u0007","title_link":"https://github.com/x","image_url":"https://i/x.png"}]}`), &raw)
+	lines := s.tuiLines(ctx, raw, s.message(ctx, raw, "C1GENERAL0"), 30)
+	var got []string
+	for _, l := range lines[1:] {
+		got = append(got, strings.TrimSpace(ansi.Strip(l)))
+	}
+	want := []string{"│ one two three four", "│ five six seven eight", "│ nine ten", "code", "after",
+		"▌ GitHub", "▌ PR ]52;c;x", "▌ [image]", "[file: a.png]", ":eyes: 2"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("줄:\n got %q\nwant %q", got, want)
+	}
+	if j := strings.Join(lines, ""); strings.Contains(j, "\x1b]52") {
+		t.Errorf("제어문자가 남음: %q", j)
 	}
 }
