@@ -1114,8 +1114,7 @@ func TestTUILater(t *testing.T) {
 	}
 	_, cmd := m.Update(press("enter"))
 	m.Update(cmd())
-	m.Update(press("j"))
-	if ts := later(); ts != m.pvMsgs[m.sel].TS || m.rows[m.cur].done || len(f.reqs["conversations.mark"]) != 0 {
+	if ts := later(); ts != m.pvMsgs[m.sel].TS || ts == m.rows[m.cur].latest.TS || m.rows[m.cur].done || len(f.reqs["conversations.mark"]) != 0 {
 		t.Errorf("고른 메시지: %q", ts)
 	}
 	f.saved = `{"ok":false,"error":"not_allowed_token_type"}`
@@ -1123,8 +1122,13 @@ func TestTUILater(t *testing.T) {
 		t.Errorf("실패: %q", m.status)
 	}
 	m.pvMsgs[m.sel].ThreadTS = m.pvMsgs[m.sel].TS // T8로 연 스레드를 받는 중 — 요청 없음
-	m.Update(press("enter"))
+	_, cmd = m.Update(press("enter"))
 	if ts := later(); ts != "" {
 		t.Errorf("받는 중: %q", ts)
+	}
+	f.saved = ""
+	m.Update(cmd()) // 받으면 고른 답글
+	if ts := later(); ts == "" || ts != m.pvMsgs[m.sel].TS {
+		t.Errorf("스레드 답글: %q", ts)
 	}
 }
