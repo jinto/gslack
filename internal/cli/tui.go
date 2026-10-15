@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"slices"
@@ -167,11 +168,12 @@ type tuiModel struct {
 	pvMsgs   []core.Message                      // 미리보기 메시지. 받기 전·실패면 nil
 	pvRaw    []slack.Message                     // 그 원본 — 첨부·블록을 그리고, 폭이 바뀌면 다시 그린다
 	pvHead   string
-	pvStarts []int    // 메시지마다 첫 줄(pvLines 기준)
-	pvTops   []int    // 메시지마다 맨 위로 맞출 줄 — 날짜 줄이 있으면 그 줄
-	pvLines  []string // 홈 없는 미리보기 줄
-	sel      int      // 고른 메시지
-	back     *pvSaved // 미리보기에서 연 스레드면 돌아갈 채널 미리보기 — 포커스 중에만(Esc·m이 지운다)
+	pvStarts []int              // 메시지마다 첫 줄(pvLines 기준)
+	pvTops   []int              // 메시지마다 맨 위로 맞출 줄 — 날짜 줄이 있으면 그 줄
+	pvLines  []string           // 홈 없는 미리보기 줄
+	sel      int                // 고른 메시지
+	back     *pvSaved           // 미리보기에서 연 스레드면 돌아갈 채널 미리보기 — 포커스 중에만(Esc·m이 지운다)
+	imgs     map[string]pvImage // 그림 URL → 받은 것(세션 동안). nil이면 그림 끔(GSLACK_IMAGES=off)
 	height   int
 	listH    int
 	vp       viewport.Model
@@ -196,6 +198,9 @@ func newTUI(ctx context.Context, a *app, s *session) *tuiModel {
 		PageUp:   key.NewBinding(key.WithKeys("pgup")),
 	}
 	m := &tuiModel{ctx: ctx, a: a, s: s, vp: vp, ti: textinput.New()}
+	if os.Getenv("GSLACK_IMAGES") != "off" {
+		m.imgs = map[string]pvImage{}
+	}
 	m.dialer, m.liveErr = liveDialer(s)
 	return m
 }
@@ -565,7 +570,9 @@ func (m *tuiModel) layout() {
 }
 
 // showPreview는 받은 미리보기를 둔다. 처음 고른 메시지는 안 본 첫 메시지(맨 위, 바로 앞 날짜 줄까지), 모르면 마지막(맨 아래).
-func (m *tuiModel) showPreview(msg previewMsg) {
+// 그림은 여기서만 받는다 — 메시지가 바뀌는 곳은 여기뿐(폭 변경·T8 Esc 복원은 캐시로 그린다).
+func (m *tuiModel) showPreview(msg previewMsg) tea.Cmd {
+	cmd := m.fetchImages(msg.msgs) // 그리기 전에 — 받는 중인 그림의 자리를 잡게
 	m.pvRaw, m.pvHead, m.pvMsgs = msg.msgs, msg.head, make([]core.Message, len(msg.msgs))
 	for i, sm := range msg.msgs {
 		m.pvMsgs[i] = m.s.message(m.ctx, sm, msg.ch)
@@ -579,9 +586,10 @@ func (m *tuiModel) showPreview(msg previewMsg) {
 	m.highlight()
 	if i < 0 {
 		m.vp.GotoBottom()
-		return
+		return cmd
 	}
 	m.vp.SetYOffset(m.pvTops[i]) // 안 본 것이 화면보다 짧으면 viewport가 맨 아래로 맞춘다
+	return cmd
 }
 
 // renderPreview는 메시지를 지금 폭으로 그린다(홈 2칸을 뺀 폭). 날이 바뀌면 날짜 줄.
@@ -596,7 +604,7 @@ func (m *tuiModel) renderPreview() {
 			m.pvLines, lastDay = append(m.pvLines, dimStyle.Render("── "+day+" ──")), day
 		}
 		m.pvStarts[i] = len(m.pvLines)
-		m.pvLines = append(m.pvLines, m.s.tuiLines(m.ctx, m.pvRaw[i], cm, width)...)
+		m.pvLines = append(m.pvLines, m.s.tuiLines(m.ctx, m.pvRaw[i], cm, width, m.imgs)...)
 	}
 }
 
@@ -744,9 +752,16 @@ func (m *tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.highlight()
 			return m, nil
 		}
-		m.showPreview(msg)
+		cmd := m.showPreview(msg)
 		if msg.latest != "" {
 			m.pv.ch, m.pv.ts, m.pv.read, m.pv.seen = msg.ch, msg.latest, msg.read, msg.read
+		}
+		return m, cmd
+	case imageMsg:
+		m.imgs[msg.url] = pvImage{msg.img, true}
+		if len(m.pvMsgs) > 0 { // 불러오는 중·실패 화면은 덮지 않는다. YOffset은 그대로(크기를 알면 줄 수가 같다)
+			m.renderPreview()
+			m.highlight()
 		}
 	case sentMsg:
 		m.sending = false

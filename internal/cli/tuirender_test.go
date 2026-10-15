@@ -120,7 +120,7 @@ func TestTUILinesAttachment(t *testing.T) {
 	ctx := context.Background()
 	raw := grafana(t)
 	cm := s.message(ctx, raw, "C1GENERAL0") // cm.Text는 첨부 내용으로 채워진다 — 두 번 찍히면 안 된다
-	lines := s.tuiLines(ctx, raw, cm, 60)
+	lines := s.tuiLines(ctx, raw, cm, 60, nil)
 	plain := ansi.Strip(strings.Join(lines, "\n"))
 	for _, want := range []string{"LXP Deploy BOT APP", "▌ [RESOLVED] TDEA PROD Error Spike Detection", "▌ TDEA PROD Error Spike Detection", "▌ Grafana v13.0.1+security-01 · "} {
 		if !strings.Contains(plain, want) {
@@ -137,13 +137,13 @@ func TestTUILinesAttachment(t *testing.T) {
 	}
 
 	trueColor(t)
-	joined := strings.Join(s.tuiLines(ctx, raw, cm, 60), "\n")
+	joined := strings.Join(s.tuiLines(ctx, raw, cm, 60, nil), "\n")
 	if !strings.Contains(joined, "\x1b]8;;https://grafana.example.com/alert") || !strings.Contains(joined, "38;2;46;184;134") {
 		t.Errorf("링크·막대 색 없음: %q", joined)
 	}
 
 	raw.Attachments = []slack.Attachment{{Fallback: "only fallback", HideColor: true}}
-	if plain := ansi.Strip(strings.Join(s.tuiLines(ctx, raw, cm, 60), "\n")); !strings.Contains(plain, "only fallback") || strings.Contains(plain, "▌") {
+	if plain := ansi.Strip(strings.Join(s.tuiLines(ctx, raw, cm, 60, nil), "\n")); !strings.Contains(plain, "only fallback") || strings.Contains(plain, "▌") {
 		t.Errorf("fallback·HideColor:\n%s", plain)
 	}
 }
@@ -158,10 +158,10 @@ func TestTUILinesBlocks(t *testing.T) {
 	json.Unmarshal([]byte(`{"ts":"1700000001.000000","bot_id":"B1","text":"fallback text",
 		"blocks":[{"type":"header","text":{"type":"plain_text","text":"Deploy"}},{"type":"divider"},
 		{"type":"section","text":{"type":"mrkdwn","text":"done *v1*"}},{"type":"context","elements":[{"type":"mrkdwn","text":"by ci"}]}]}`), &header)
-	if l := s.tuiLines(ctx, rich, s.message(ctx, rich, "C1GENERAL0"), 60); len(l) != 2 || !strings.Contains(l[1], "\x1b[1mhi") {
+	if l := s.tuiLines(ctx, rich, s.message(ctx, rich, "C1GENERAL0"), 60, nil); len(l) != 2 || !strings.Contains(l[1], "\x1b[1mhi") {
 		t.Errorf("rich_text + text → text의 굵게: %q", l)
 	}
-	l := s.tuiLines(ctx, header, s.message(ctx, header, "C1GENERAL0"), 60)
+	l := s.tuiLines(ctx, header, s.message(ctx, header, "C1GENERAL0"), 60, nil)
 	got := []string{}
 	for _, x := range l[1:] {
 		got = append(got, strings.TrimSpace(ansi.Strip(x)))
@@ -197,7 +197,7 @@ func TestTUILinesLayout(t *testing.T) {
 		"text":"&gt; one two three four five six seven eight nine ten\n`+"```"+`code`+"```"+`\nafter",
 		"files":[{"id":"F1","name":"a.png"}],"reactions":[{"name":"eyes","count":2}],
 		"attachments":[{"service_name":"GitHub","title":"PR \u001b]52;c;x\u0007","title_link":"https://github.com/x","image_url":"https://i/x.png"}]}`), &raw)
-	lines := s.tuiLines(ctx, raw, s.message(ctx, raw, "C1GENERAL0"), 30)
+	lines := s.tuiLines(ctx, raw, s.message(ctx, raw, "C1GENERAL0"), 30, nil)
 	var got []string
 	for _, l := range lines[1:] {
 		got = append(got, strings.TrimSpace(ansi.Strip(l)))

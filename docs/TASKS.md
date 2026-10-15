@@ -114,8 +114,10 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [x] T6 미리보기 렌더링: Slack 느낌 — 첨부 색 막대·링크 제목·굵게·footer, 폭 맞춤 줄바꿈, 고른 메시지는 홈(┃). TUI만
   → 2026-10-15 구현 — PLAN-M4-T6.md(리뷰 Codex·Opus — Fable 한도). `tuirender.go`: mrkdwn → span(코드·태그를 plane 15 자리표시로 보호, `*_~`는 단어 경계 정규식) → 논리 줄마다 `cellbuf.Wrap`(줄마다 SGR·OSC 8 다시 엶). blocks는 rich_text 말고 다른 블록이 있을 때만, 본문은 `raw.Text`(cm.Text는 첨부 fallback이 들어가 두 번 찍힘). 첨부: 막대(color hex·good/warning/danger, HideColor), author/service_name, 링크 제목, fields, blocks, fallback, footer·시각. 보안: 모든 출력에서 C0/C1/DEL 제거, OSC 8은 http·https·mailto만. 색은 ANSI 16(막대만 hex). 미리보기는 ts 대신 시각, 날짜 줄 위치는 `pvTops`, 폭이 바뀔 때만 다시 그림. `read`는 평문 그대로.
     **라이브 확인 필요(사용자)**: 실제 봇 메시지(Grafana 등) 모양, 링크 Cmd+클릭, 어두운/밝은 테마에서 색
-- [ ] T7 이미지: 올린 이미지·봇 첨부 이미지·아바타 — 반블록 기본, kitty/Ghostty 선명, Quick Look 원본
-  → 2026-10-15 계획 초안 PLAN-M4-T7.md(리뷰 전). 사용자 결정: T8~T10 뒤로 미룬다
+- [x] T7 이미지: 올린 이미지·봇 첨부 이미지·image 블록 — 반블록
+  → 2026-10-15 구현 — PLAN-M4-T7.md(리뷰 Codex·Opus — Fable 한도). 사용자 결정(리뷰 뒤): v1은 반블록만, 외부 그림은 https 아무 호스트 + 사설 IP 차단, 커스텀 이모지는 T7 밖. `tuiimage.go`: 토큰은 `files.slack.com` 썸네일에만(보낸 사람이 고른 Slack URL에 토큰 GET 방지), 외부는 토큰·쿠키·프록시 없는 클라이언트 + Dialer Control(`IsGlobalUnicast`·사설·CGNAT·NAT64·6to4 차단, 리다이렉트도 https). 10MB·4M px(DecodeConfig 먼저)·동시 4개, 디코드 직후 40×24px로 줄여 캐시(`m.imgs`, 세션 메모리). 크기를 알면(파일 Thumb360W/H·첨부 image_width) 받기 전부터 자리를 잡고 그 크기로 그려 줄 수 불변(실패해도). 받기는 `showPreview`에서만, 그림은 raw span으로 `prefixed`를 그대로 탄다(막대·들여쓰기). `GSLACK_IMAGES=off`. 알려진 한계: 크기 모르는 그림(image 블록)은 오면 줄이 밀림, imageMsg마다 전체 다시 칠함.
+    **라이브 확인 필요(사용자)**: 사진·봇 차트 모양, 256색 터미널, 그림 많은 채널 속도
+- [ ] T7b 이미지 선명하게: kitty/Ghostty 유니코드 자리표시(그때 `clean`이 plane 16 사설 영역도 지움), 아바타·봇 아이콘, Quick Look `v`, context 블록 아이콘
 - [x] T8 스레드 열기: 미리보기에서 답글 달린 메시지를 골라 Enter → 아래 판넬이 그 스레드로, Esc로 채널에 돌아감, r은 스레드 안에
   → 2026-10-15 구현 — PLAN-M4-T8.md(리뷰 Codex·Opus — Fable 한도). 열기 조건은 고른 메시지의 ThreadTS(부모·broadcast 둘 다). 스레드 줄은 `pvRow` 전용 가짜 줄(`latest.TS = ""` → `thread()` 참, 목록엔 안 넣음). 채널 미리보기는 `back`에 두고 Esc로 받지 않고 되돌림(seq++로 늦은 응답 버림, 다시 그린 뒤 showSel). 스레드 안 `m`은 채널을 치움(`target`), 스레드 답장은 채널을 mark하지 않음(T9가 맡음). 키 힌트 `Enter 스레드`·`Esc 채널`.
     **라이브 확인 필요(사용자)**: 실제 채널에서 스레드 열기·Esc 복귀·스레드 답장
@@ -125,6 +127,6 @@ PRD.md의 마일스톤 순서를 따른다. 각 항목은 완료 기준(✓)을 
 - [x] T10 나중에 보기: 고른 메시지를 Slack "나중에(Later)"에 넣기 — 비공식 API라 spike로 session 프로필에서 먼저 확인
   → 2026-10-15 구현 — PLAN-M4-T10.md(리뷰 Codex·Opus — Fable 한도). spike `later`(session): `saved.list`·`saved.add`(item_type=message, item_id=채널, ts) ok, 앱 "나중에"와 같은 목록, 이미 있어도 ok. `l`: 대상은 `o`와 같은 규칙(포커스면 고른 메시지, 목록이면 줄의 latest), T8 가짜 줄(TS "")이면 요청 없음, 읽음은 그대로. `private`에 폼 kv. 프로필 검사 없음 — user(xoxp)면 Slack의 거절 이유가 상태줄에.
     **라이브 확인 필요(사용자)**: 스레드 답글 `l`(spike 미확인), user 프로필에서 되는지
-- [x] T11 이모지: `:car:` → 🚗 — Slack 이름표(emoji-datasource)로 본문·리액션·`read`. 커스텀 이모지는 T7(그림). 사용자 결정: T7보다 먼저, 읽음 규칙은 j/k 그대로
+- [x] T11 이모지: `:car:` → 🚗 — Slack 이름표(emoji-datasource)로 본문·리액션·`read`. 커스텀 이모지는 `:name:` 그대로(`emoji:read` 없음 — T7에서 뺌, 2026-10-15). 사용자 결정: T7보다 먼저, 읽음 규칙은 j/k 그대로
   → 2026-10-15 구현 — PLAN-M4-T11.md(리뷰 Codex·Opus — Fable 한도). `scripts/emoji.py`(uv)가 emoji-datasource@15.1.2에서 `internal/core/emoji_table.go`(이름 3604개, 피부색 변형은 `이름::skin-tone-N` 키 — ZWJ 이모지도 바른 글자, 견본 단독 키는 뺌)를 만든다(`go generate`). `core.Emoji`는 콜론마다 맞춰 보는 루프(빗나간 이름이 콜론을 안 먹음), 표에 없는 커스텀은 그대로. 적용: `Render`(read·목록·알림), TUI 본문(코드·태그를 뗀 뒤, 강조 전), 리액션, 상태 이모지, rich_text skin_tone. `--json`은 원문. 알려진 한계: Render는 코드 블록 안도 바꿈, TUI에서 `:keycap_star:`가 `*` 굵게 짝에 걸릴 수 있음, keycap 폭(ansi 1칸·터미널 2칸).
     **라이브 확인 필요(사용자)**: 미리보기 이모지·리액션 모양, 줄 끝 밀림

@@ -21,9 +21,9 @@ import (
 // tui 미리보기 렌더링 — Slack 원본처럼 이름·시각 머리줄, 첨부 색 막대, mrkdwn 스타일, 폭 맞춤 줄바꿈.
 // 평문을 만든 뒤 덧입히지 않고 span(글자 + 스타일 + 링크) 단위로 만들고 span 단위로 감싼다 —
 // 줄을 넘는 굵게·링크도 줄마다 온전하고, URL·이름 안의 _는 기울임이 되지 않는다.
-// 네트워크는 쓰지 않는다(이름 캐시 빼고) — T7 이미지는 Cmd에서 받는다.
+// 네트워크는 쓰지 않는다(이름 캐시 빼고) — 그림은 Cmd가 받아 둔 것(tuiimage.go)을 찾기만.
 
-const bodyIndent = "       " // "HH:MM  " — 아바타가 들어오면 바뀐다
+const bodyIndent = "       " // "HH:MM  " — 아바타가 들어오면 바뀐다(T7b)
 
 var (
 	dimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // ANSI 16색 — 테마가 맞춘다(AdaptiveColor는 배경을 묻는다)
@@ -37,6 +37,7 @@ type span struct {
 	style lipgloss.Style
 	link  string // 하이퍼링크(OSC 8) — 안전한 것만
 	quote bool   // 인용 줄 표시(글자 없음) — 감싼 줄마다 │
+	raw   bool   // 이미 칠한 줄(그림) — clean·스타일 없이 그대로
 }
 
 // 보호 구간(코드·태그)은 plane 15 사용자 영역 글자로 바꿔 두고 강조 정규식이 건드리지 않게 한다.
@@ -183,6 +184,9 @@ func safeLink(u string) string {
 
 // renderSpan은 span 하나를 스타일·링크로 감싼다. 여러 줄이면 줄마다(lipgloss는 여러 줄을 가장 긴 줄 폭으로 채운다).
 func renderSpan(sp span) string {
+	if sp.raw {
+		return sp.text
+	}
 	parts := strings.Split(clean(sp.text), "\n")
 	for i, t := range parts {
 		if t == "" {
@@ -224,7 +228,7 @@ func splitLines(spans []span) [][]span {
 		}
 	}
 	blank := func(l []span) bool {
-		return !slices.ContainsFunc(l, func(sp span) bool { return strings.TrimSpace(sp.text) != "" })
+		return !slices.ContainsFunc(l, func(sp span) bool { return strings.TrimSpace(sp.text) != "" || sp.raw && sp.text != "" })
 	}
 	for len(lines) > 0 && blank(lines[0]) {
 		lines = lines[1:]
@@ -286,7 +290,7 @@ func nl(spans []span) []span {
 }
 
 // blockSpans는 블록을 span으로(블록 사이 줄바꿈). 모르는 블록(actions·input)은 건너뛴다.
-func (s *session) blockSpans(ctx context.Context, blocks []slack.Block) []span {
+func (s *session) blockSpans(ctx context.Context, blocks []slack.Block, pic picFunc) []span {
 	var out []span
 	for _, b := range blocks {
 		switch b := b.(type) {
@@ -305,14 +309,18 @@ func (s *session) blockSpans(ctx context.Context, blocks []slack.Block) []span {
 					parts = append(parts, s.textSpans(ctx, e, dimStyle)...)
 					parts = append(parts, span{text: "  ", style: dimStyle})
 				case *slack.ImageBlockElement:
-					// ponytail: context 아이콘은 T7(이미지)
+					// ponytail: context 아이콘은 T7b
 				}
 			}
 			out = append(out, nl(parts)...)
 		case *slack.DividerBlock:
 			out = append(out, span{text: "───\n", style: dimStyle})
 		case *slack.ImageBlock:
-			out = append(out, span{text: "[image: " + cmp.Or(b.AltText, "image") + "]\n", style: dimStyle}) // T7
+			if p := pic(b.ImageURL, 0, 0); p != nil {
+				out = append(out, p...)
+			} else {
+				out = append(out, span{text: "[image: " + cmp.Or(b.AltText, "image") + "]\n", style: dimStyle})
+			}
 		case *slack.RichTextBlock:
 			out = append(out, nl(s.mrkdwnSpans(ctx, richText(b.Elements), lipgloss.NewStyle()))...)
 		}
@@ -322,7 +330,7 @@ func (s *session) blockSpans(ctx context.Context, blocks []slack.Block) []span {
 
 // bodySpans: Slack처럼 rich_text 말고 다른 블록이 있으면 blocks, 아니면 text(rich_text의 text에는 mrkdwn 마커가 그대로 있다).
 // cm.Text가 아니라 raw.Text — cm.Text는 비면 첨부 내용으로 채워져 두 번 찍힌다.
-func (s *session) bodySpans(ctx context.Context, raw slack.Message) []span {
+func (s *session) bodySpans(ctx context.Context, raw slack.Message, pic picFunc) []span {
 	rich := true
 	for _, b := range raw.Blocks.BlockSet {
 		if _, ok := b.(*slack.RichTextBlock); !ok {
@@ -330,7 +338,7 @@ func (s *session) bodySpans(ctx context.Context, raw slack.Message) []span {
 		}
 	}
 	if !rich || raw.Text == "" {
-		if out := s.blockSpans(ctx, raw.Blocks.BlockSet); len(out) > 0 {
+		if out := s.blockSpans(ctx, raw.Blocks.BlockSet, pic); len(out) > 0 {
 			return out
 		}
 	}
@@ -338,7 +346,7 @@ func (s *session) bodySpans(ctx context.Context, raw slack.Message) []span {
 }
 
 // attachmentLines는 첨부 하나 — pretext는 막대 밖, 나머지는 막대 안.
-func (s *session) attachmentLines(ctx context.Context, a slack.Attachment, width int) []string {
+func (s *session) attachmentLines(ctx context.Context, a slack.Attachment, width int, pic picFunc) []string {
 	var lines []string
 	if a.Pretext != "" {
 		lines = prefixed(bodyIndent, s.mrkdwnSpans(ctx, a.Pretext, lipgloss.NewStyle()), width)
@@ -359,12 +367,14 @@ func (s *session) attachmentLines(ctx context.Context, a slack.Attachment, width
 		in = append(in, span{text: f.Title + "\n", style: nameBold})
 		in = append(in, nl(s.mrkdwnSpans(ctx, f.Value, lipgloss.NewStyle()))...)
 	}
-	in = append(in, s.blockSpans(ctx, a.Blocks.BlockSet)...)
+	in = append(in, s.blockSpans(ctx, a.Blocks.BlockSet, pic)...)
 	if len(in) == 0 && a.Pretext == "" && a.Fallback != "" {
 		in = nl(s.mrkdwnSpans(ctx, a.Fallback, lipgloss.NewStyle()))
 	}
-	if a.ImageURL != "" {
-		in = append(in, span{text: "[image]\n", style: dimStyle}) // T7 — 제 줄 하나(그림 여러 줄로 바뀐다)
+	if p := pic(a.ImageURL, a.ImageWidth, a.ImageHeight); p != nil {
+		in = append(in, p...)
+	} else if a.ImageURL != "" {
+		in = append(in, span{text: "[image]\n", style: dimStyle})
 	}
 	if foot := a.Footer; foot != "" || a.Ts != "" {
 		if f, err := strconv.ParseFloat(string(a.Ts), 64); err == nil && f > 0 {
@@ -382,23 +392,32 @@ func (s *session) attachmentLines(ctx context.Context, a slack.Attachment, width
 	return append(lines, prefixed(bodyIndent+bar, in, width)...)
 }
 
-// tuiLines는 메시지 하나의 줄이다(홈 없이 — 홈은 미리보기가 붙인다). width는 홈을 뺀 폭.
-func (s *session) tuiLines(ctx context.Context, raw slack.Message, cm core.Message, width int) []string {
+// picFunc는 그림 URL(크기를 알면 w·h)의 자리 span이다 — nil이면 글자 자리표시.
+type picFunc func(u string, w, h int) []span
+
+// tuiLines는 메시지 하나의 줄이다(홈 없이 — 홈은 미리보기가 붙인다). width는 홈을 뺀 폭. imgs는 받은 그림(nil이면 글자 자리표시).
+func (s *session) tuiLines(ctx context.Context, raw slack.Message, cm core.Message, width int, imgs map[string]pvImage) []string {
+	cols := max(min(imgCols, width-len(bodyIndent)-2), 1) // 첨부 막대 2칸까지 뺀다
+	pic := func(u string, w, h int) []span { return picture(imgs, u, w, h, cols) }
 	head := dimStyle.Render(core.Time(cm.TS).Local().Format("15:04")) + "  " + nameBold.Render(clean(cmp.Or(cm.UserName, cm.User)))
 	if cm.Bot {
 		head += " " + dimStyle.Render("APP")
 	}
 	lines := []string{ansi.Truncate(head, width, "…")}
-	lines = append(lines, prefixed(bodyIndent, s.bodySpans(ctx, raw), width)...)
+	lines = append(lines, prefixed(bodyIndent, s.bodySpans(ctx, raw, pic), width)...)
 	for _, a := range raw.Attachments {
-		lines = append(lines, s.attachmentLines(ctx, a, width)...)
+		lines = append(lines, s.attachmentLines(ctx, a, width, pic)...)
 	}
 	var tags []string
 	if cm.ReplyCount > 0 {
 		tags = append(tags, fmt.Sprintf("[%d replies]", cm.ReplyCount))
 	}
-	for _, f := range cm.Files { // T7 — 파일마다 제 줄(썸네일로 바뀐다)
-		lines = append(lines, prefixed(bodyIndent, []span{{text: "[file: " + f.Name + "]", style: dimStyle}}, width)...)
+	for _, f := range raw.Files { // 그림이면 썸네일 + 이름, 아니면 제 줄
+		sp := []span{{text: "[file: " + f.Name + "]", style: dimStyle}}
+		if p := pic(f.Thumb360, f.Thumb360W, f.Thumb360H); p != nil {
+			sp = append(p, span{text: f.Name, style: dimStyle})
+		}
+		lines = append(lines, prefixed(bodyIndent, sp, width)...)
 	}
 	if cm.Edited {
 		tags = append(tags, "(edited)")

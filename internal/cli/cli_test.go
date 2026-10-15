@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +43,7 @@ type fakeSlack struct {
 	rtmAuth   string   // rtm.connect 오류 코드
 	prefs     string   // users.prefs.get 응답(비면 unknown_method)
 	saved     string   // saved.add 응답(비면 ok)
+	imgAuth   []string // /img/ 요청의 Authorization
 }
 
 func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +80,12 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	case strings.HasPrefix(r.URL.Path, "/img/"): // 올린 파일 썸네일 — 4×4 빨강 PNG
+		f.mu.Lock()
+		f.imgAuth = append(f.imgAuth, r.Header.Get("Authorization"))
+		f.mu.Unlock()
+		w.Write(pngOf(4, 4, color.NRGBA{255, 0, 0, 255}))
+		return
 	case strings.HasPrefix(r.URL.Path, "/dl/"):
 		w.Write([]byte("DATA-" + strings.TrimPrefix(r.URL.Path, "/dl/")))
 		return
